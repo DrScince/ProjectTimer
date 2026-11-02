@@ -1,0 +1,12 @@
+node_modules
+dist
+out
+.tmp-electron
+.DS_Store
+*.log
+*.tsbuildinfo
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.db
+*.db-*

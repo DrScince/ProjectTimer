@@ -1,0 +1,37 @@
+{
+  "name": "project-timer",
+  "version": "1.0.0",
+  "description": "Desktop-Zeiterfassung mit SAP-CSV-Export",
+  "main": "./out/main/index.js",
+  "author": "ProjectTimer",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "postinstall": "node scripts/install-electron.js && electron-builder install-app-deps",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.4",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  },
+  "allowScripts": {
+    "electron@34.2.0": true,
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.25.12": true
+  }
+}
