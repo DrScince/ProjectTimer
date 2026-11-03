@@ -20,6 +20,8 @@ publish:
   provider: github
   owner: DrScince
   repo: ProjectTimer
+  # Öffentliches Release (kein Draft), damit Installer- und Portable-Assets sichtbar sind
+  releaseType: release
 win:
   target:
     - nsis
