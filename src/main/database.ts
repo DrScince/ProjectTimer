@@ -5,6 +5,7 @@ import { join } from 'path'
 import {
   DEFAULT_CSV_SPALTEN,
   type Anwesenheit,
+  type AnwesenheitTagSumme,
   type Einstellungen,
   type EmpfaengerArt,
   type IdleResolveInput,
@@ -13,6 +14,8 @@ import {
   type ProjektMitZeit,
   type SapTagesStatus,
   type SapTransferStatus,
+  type TagesThema,
+  type TopicVerteilung,
   type Zeitbuchung,
   type ZeitbuchungInput,
   type ZeitbuchungMitProjekt
@@ -47,6 +50,7 @@ export function initDatabase(): void {
       empfaenger TEXT NOT NULL DEFAULT '',
       leistungsart TEXT NOT NULL DEFAULT '',
       aktiv INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       erstellt_am TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
 
@@ -75,6 +79,16 @@ export function initDatabase(): void {
       pause_seit TEXT,
       pausen_minuten INTEGER NOT NULL DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS tages_themen (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      datum TEXT NOT NULL,
+      projekt_id INTEGER NOT NULL,
+      kurztext TEXT NOT NULL,
+      erstellt_am TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+      UNIQUE(datum, projekt_id, kurztext),
+      FOREIGN KEY (projekt_id) REFERENCES projekte(id)
+    );
   `)
 
   migrateSchema()
@@ -98,6 +112,19 @@ function migrateSchema(): void {
     if (!names.has('kurztext')) {
       database.exec(`ALTER TABLE projekte ADD COLUMN kurztext TEXT DEFAULT ''`)
       console.log('[ProjectTimer] Migration: Spalte kurztext hinzugefügt')
+    }
+    if (!names.has('sort_order')) {
+      database.exec(`ALTER TABLE projekte ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`)
+      // Bestehende Projekte alphabetisch als Startreihenfolge übernehmen
+      const rows = database
+        .prepare(`SELECT id FROM projekte ORDER BY name COLLATE NOCASE, id`)
+        .all() as Array<{ id: number }>
+      const update = database.prepare(`UPDATE projekte SET sort_order = ? WHERE id = ?`)
+      const tx = database.transaction(() => {
+        rows.forEach((row, index) => update.run(index, row.id))
+      })
+      tx()
+      console.log('[ProjectTimer] Migration: Spalte sort_order hinzugefügt')
     }
 
     const buchungCols = database
@@ -129,6 +156,9 @@ function seedEinstellungen(): void {
     csvTrennzeichen: ';',
     csvSpalten: JSON.stringify([...DEFAULT_CSV_SPALTEN]),
     alwaysOnTopBar: '0',
+    floatBarMode: 'free',
+    floatBarEdge: 'top',
+    floatBarEdgeOffset: '',
     darkMode: '0',
     idleDetectionEnabled: '1',
     idleThresholdMinutes: '5',
@@ -160,6 +190,7 @@ function mapProjekt(row: Record<string, unknown>): Projekt {
     empfaenger: row.empfaenger as string,
     leistungsart: row.leistungsart as string,
     aktiv: Boolean(row.aktiv),
+    sortOrder: Number(row.sort_order ?? 0),
     erstelltAm: row.erstellt_am as string
   }
 }
@@ -208,9 +239,16 @@ const BUCHUNG_SELECT = `
 
 export function listProjekte(nurAktiv = false): Projekt[] {
   const sql = nurAktiv
-    ? 'SELECT * FROM projekte WHERE aktiv = 1 ORDER BY name COLLATE NOCASE'
-    : 'SELECT * FROM projekte ORDER BY aktiv DESC, name COLLATE NOCASE'
+    ? 'SELECT * FROM projekte WHERE aktiv = 1 ORDER BY sort_order ASC, name COLLATE NOCASE, id'
+    : 'SELECT * FROM projekte ORDER BY sort_order ASC, name COLLATE NOCASE, id'
   return getDb().prepare(sql).all().map((row) => mapProjekt(row as Record<string, unknown>))
+}
+
+function nextSortOrder(): number {
+  const row = getDb().prepare(`SELECT COALESCE(MAX(sort_order), -1) AS maxOrder FROM projekte`).get() as {
+    maxOrder: number
+  }
+  return Number(row.maxOrder) + 1
 }
 
 export function getProjekt(id: number): Projekt | null {
@@ -230,8 +268,8 @@ export function createProjekt(input: ProjektInput): Projekt {
   const result = getDb()
     .prepare(
       `INSERT INTO projekte
-        (name, kuerzel, auftragsnummer, arbeitsplatz, kurztext, empfaenger_art, empfaenger, leistungsart, aktiv)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (name, kuerzel, auftragsnummer, arbeitsplatz, kurztext, empfaenger_art, empfaenger, leistungsart, aktiv, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.name.trim(),
@@ -242,9 +280,38 @@ export function createProjekt(input: ProjektInput): Projekt {
       input.empfaengerArt,
       input.empfaenger.trim(),
       input.leistungsart.trim(),
-      input.aktiv === false ? 0 : 1
+      input.aktiv === false ? 0 : 1,
+      nextSortOrder()
     )
   return getProjekt(Number(result.lastInsertRowid))!
+}
+
+/** Reihenfolge setzen: IDs in gewünschter Anzeigereihenfolge */
+export function reorderProjekte(orderedIds: number[]): Projekt[] {
+  const uniqueIds = [...new Set(orderedIds.filter((id) => Number.isFinite(id)))]
+  if (uniqueIds.length === 0) return listProjekte(false)
+
+  const database = getDb()
+  const stmt = database.prepare(`UPDATE projekte SET sort_order = ? WHERE id = ?`)
+  const tx = database.transaction(() => {
+    uniqueIds.forEach((id, index) => stmt.run(index, id))
+  })
+  tx()
+  return listProjekte(false)
+}
+
+export function moveProjekt(id: number, direction: 'up' | 'down'): Projekt[] {
+  const list = listProjekte(false)
+  const index = list.findIndex((p) => p.id === id)
+  if (index < 0) return list
+  const swapWith = direction === 'up' ? index - 1 : index + 1
+  if (swapWith < 0 || swapWith >= list.length) return list
+
+  const next = [...list]
+  const tmp = next[index]
+  next[index] = next[swapWith]
+  next[swapWith] = tmp
+  return reorderProjekte(next.map((p) => p.id))
 }
 
 export function updateProjekt(id: number, input: ProjektInput): Projekt {
@@ -459,6 +526,42 @@ export function clearSapByDatumProjekt(datum: string, projektId: number): number
   return clearBuchungenSapUeberfuehrt(ids)
 }
 
+export function markSapByDatumProjektNotiz(
+  datum: string,
+  projektId: number,
+  kurztext: string
+): number {
+  const topic = kurztext.trim()
+  const ids = listBuchungenByDatum(datum)
+    .filter(
+      (b) =>
+        b.projektId === projektId &&
+        (b.notiz ?? '').trim() === topic &&
+        istBuchungAbgeschlossen(b) &&
+        !b.sapUeberfuehrtAm
+    )
+    .map((b) => b.id)
+  return markBuchungenSapUeberfuehrt(ids)
+}
+
+export function clearSapByDatumProjektNotiz(
+  datum: string,
+  projektId: number,
+  kurztext: string
+): number {
+  const topic = kurztext.trim()
+  const ids = listBuchungenByDatum(datum)
+    .filter(
+      (b) =>
+        b.projektId === projektId &&
+        (b.notiz ?? '').trim() === topic &&
+        istBuchungAbgeschlossen(b) &&
+        Boolean(b.sapUeberfuehrtAm)
+    )
+    .map((b) => b.id)
+  return clearBuchungenSapUeberfuehrt(ids)
+}
+
 export function getLaufenderTimer(): ZeitbuchungMitProjekt | null {
   const row = getDb()
     .prepare(`${BUCHUNG_SELECT} WHERE z.ende_zeit IS NULL AND z.quelle = 'timer' ORDER BY z.id DESC LIMIT 1`)
@@ -505,6 +608,14 @@ export function createBuchung(input: ZeitbuchungInput): ZeitbuchungMitProjekt {
   }
 
   const dauer = berechneDauerMinuten(input.startZeit, input.endeZeit, input.dauerMinuten)
+  const notiz = input.notiz?.trim() ?? ''
+  if (notiz) {
+    getDb()
+      .prepare(
+        `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
+      )
+      .run(input.datum, input.projektId, notiz)
+  }
   const result = getDb()
     .prepare(
       `INSERT INTO zeitbuchungen
@@ -517,7 +628,7 @@ export function createBuchung(input: ZeitbuchungInput): ZeitbuchungMitProjekt {
       input.startZeit ?? null,
       input.endeZeit ?? null,
       dauer,
-      input.notiz?.trim() ?? '',
+      notiz,
       input.quelle ?? 'manuell'
     )
 
@@ -584,6 +695,44 @@ function mapAnwesenheit(row: Record<string, unknown>, jetzt = new Date()): Anwes
   }
 }
 
+/**
+ * Stempelzeiten (ohne Pause) je Kalendertag im Bereich, gruppiert nach Kommen-Datum (lokal).
+ */
+export function listAnwesenheitMinutenByRange(von: string, bis: string): AnwesenheitTagSumme[] {
+  const padStart = (() => {
+    const [y, m, d] = von.split('-').map(Number)
+    const date = new Date(y, m - 1, d - 1)
+    return formatDate(date)
+  })()
+  const padEnd = (() => {
+    const [y, m, d] = bis.split('-').map(Number)
+    const date = new Date(y, m - 1, d + 2)
+    return formatDate(date)
+  })()
+
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM anwesenheit
+       WHERE kommen_am >= ? AND kommen_am < ?
+       ORDER BY kommen_am`
+    )
+    .all(`${padStart}T00:00:00.000Z`, `${padEnd}T00:00:00.000Z`) as Record<string, unknown>[]
+
+  const jetzt = new Date()
+  const map = new Map<string, number>()
+  for (const row of rows) {
+    const a = mapAnwesenheit(row, jetzt)
+    const datum = formatDate(new Date(a.kommenAm))
+    if (datum < von || datum > bis) continue
+    map.set(datum, (map.get(datum) ?? 0) + Math.floor(a.stempelSekunden / 60))
+  }
+
+  return Array.from(map.entries()).map(([datum, stempelMinuten]) => ({
+    datum,
+    stempelMinuten
+  }))
+}
+
 export function getAnwesenheit(jetzt = new Date()): Anwesenheit | null {
   const offen = getOffeneAnwesenheitRow()
   if (offen) return mapAnwesenheit(offen, jetzt)
@@ -631,13 +780,54 @@ export function ensurePauseIfAnwesend(): void {
   beginPauseIfNeeded(offen.id as number)
 }
 
-/** Anwesend ohne Auftrag = Pause */
+function getLetzteGeschlosseneAnwesenheitHeute(jetzt = new Date()): Record<string, unknown> | undefined {
+  const heute = formatDate(jetzt)
+  const geschlossen = getDb()
+    .prepare(
+      `SELECT * FROM anwesenheit
+       WHERE gehen_am IS NOT NULL
+       ORDER BY id DESC
+       LIMIT 10`
+    )
+    .all() as Array<Record<string, unknown>>
+  return geschlossen.find((row) => formatDate(new Date(row.kommen_am as string)) === heute)
+}
+
+/**
+ * Kommen: neue Tages-Sitzung oder – wenn heute schon gekommen/gegangen –
+ * bestehende Sitzung fortsetzen (ursprüngliche Kommen-Zeit bleibt, Lücke = Pause).
+ */
 export function kommen(): Anwesenheit {
   const offen = getOffeneAnwesenheitRow()
   if (offen) {
     throw new Error(t('err.alreadyCheckedIn'))
   }
-  const jetzt = new Date().toISOString()
+
+  const jetztDate = new Date()
+  const jetzt = jetztDate.toISOString()
+  const heutige = getLetzteGeschlosseneAnwesenheitHeute(jetztDate)
+
+  if (heutige) {
+    const gehenAm = heutige.gehen_am as string
+    const gapMinuten = Math.max(
+      0,
+      Math.round((jetztDate.getTime() - new Date(gehenAm).getTime()) / 60000)
+    )
+    const pausenMinuten = Number(heutige.pausen_minuten ?? 0) + gapMinuten
+    getDb()
+      .prepare(
+        `UPDATE anwesenheit
+         SET gehen_am = NULL, pause_seit = ?, pausen_minuten = ?
+         WHERE id = ?`
+      )
+      .run(jetzt, pausenMinuten, heutige.id)
+
+    const row = getDb()
+      .prepare('SELECT * FROM anwesenheit WHERE id = ?')
+      .get(heutige.id) as Record<string, unknown>
+    return mapAnwesenheit(row, jetztDate)
+  }
+
   const result = getDb()
     .prepare(
       `INSERT INTO anwesenheit (kommen_am, gehen_am, pause_seit, pausen_minuten)
@@ -647,7 +837,7 @@ export function kommen(): Anwesenheit {
   const row = getDb()
     .prepare('SELECT * FROM anwesenheit WHERE id = ?')
     .get(result.lastInsertRowid) as Record<string, unknown>
-  return mapAnwesenheit(row)
+  return mapAnwesenheit(row, jetztDate)
 }
 
 export function gehen(): Anwesenheit {
@@ -790,6 +980,247 @@ export function pauseToggle(): Anwesenheit {
   return mapAnwesenheit(row)
 }
 
+function laufendeTimerMinuten(buchung: ZeitbuchungMitProjekt, jetzt = new Date()): number {
+  if (!buchung.startZeit || buchung.endeZeit) return 0
+  const [sh, sm] = buchung.startZeit.split(':').map(Number)
+  let diff = jetzt.getHours() * 60 + jetzt.getMinutes() - (sh * 60 + sm)
+  if (diff < 0) diff += 24 * 60
+  return Math.max(0, diff)
+}
+
+function buildThemenFuerProjekt(
+  projektId: number,
+  datum: string,
+  buchungen: ZeitbuchungMitProjekt[],
+  laufend: ZeitbuchungMitProjekt | null
+): TagesThema[] {
+  const templates = getDb()
+    .prepare(
+      `SELECT kurztext FROM tages_themen WHERE datum = ? AND projekt_id = ? ORDER BY id`
+    )
+    .all(datum, projektId) as Array<{ kurztext: string }>
+
+  const groups = new Map<string, ZeitbuchungMitProjekt[]>()
+  for (const t of templates) {
+    const key = t.kurztext.trim()
+    if (!groups.has(key)) groups.set(key, [])
+  }
+  for (const b of buchungen) {
+    if (b.projektId !== projektId) continue
+    const key = (b.notiz ?? '').trim()
+    const list = groups.get(key) ?? []
+    list.push(b)
+    groups.set(key, list)
+  }
+
+  const themen: TagesThema[] = []
+  for (const [kurztext, items] of Array.from(groups.entries())) {
+    const completed = items.filter(istBuchungAbgeschlossen)
+    const abgeschlossen = completed.reduce(
+      (sum: number, b: ZeitbuchungMitProjekt) => sum + (b.dauerMinuten ?? 0),
+      0
+    )
+    let minuten = abgeschlossen
+    const running =
+      Boolean(laufend) &&
+      laufend!.projektId === projektId &&
+      (laufend!.notiz ?? '').trim() === kurztext &&
+      !laufend!.endeZeit
+    if (running && laufend) {
+      minuten += laufendeTimerMinuten(laufend)
+    }
+    const sap = sapStatusFromBuchungen(completed)
+    themen.push({
+      projektId,
+      kurztext,
+      heuteMinuten: minuten,
+      heuteAbgeschlossenMinuten: abgeschlossen,
+      timerLaeuft: running,
+      sapStatus: sap.status,
+      sapUeberfuehrtAm: sap.zuletztUeberfuehrtAm
+    })
+  }
+
+  return themen.sort((a, b) => {
+    if (a.timerLaeuft !== b.timerLaeuft) return a.timerLaeuft ? -1 : 1
+    return a.kurztext.localeCompare(b.kurztext, 'de')
+  })
+}
+
+export function createTagesThema(projektId: number, kurztext: string): TagesThema {
+  const text = kurztext.trim()
+  if (!text) {
+    throw new Error(t('err.topicRequired'))
+  }
+  const projekt = getProjekt(projektId)
+  if (!projekt) {
+    throw new Error(t('err.projectNotFound'))
+  }
+  const datum = formatDate(new Date())
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
+    )
+    .run(datum, projektId, text)
+
+  const laufend = getLaufenderTimer()
+  const buchungen = listBuchungenByDatum(datum)
+  const themen = buildThemenFuerProjekt(projektId, datum, buchungen, laufend)
+  const found = themen.find((t) => t.kurztext === text)
+  return (
+    found ?? {
+      projektId,
+      kurztext: text,
+      heuteMinuten: 0,
+      heuteAbgeschlossenMinuten: 0,
+      timerLaeuft: false,
+      sapStatus: 'leer',
+      sapUeberfuehrtAm: null
+    }
+  )
+}
+
+/**
+ * Entfernt ein Tages-Topic. Getrackte Zeit bleibt am Auftrag und fällt auf „ohne Kurztext“ zurück.
+ */
+export function deleteTagesThema(projektId: number, kurztext: string): boolean {
+  const datum = formatDate(new Date())
+  const text = String(kurztext ?? '').trim()
+  const pid = Number(projektId)
+  if (!text) {
+    throw new Error(t('err.topicRequired'))
+  }
+  if (!Number.isFinite(pid)) {
+    throw new Error(t('err.projectNotFound'))
+  }
+
+  const laufend = getLaufenderTimer()
+  if (
+    laufend &&
+    laufend.projektId === pid &&
+    (laufend.notiz ?? '').trim() === text &&
+    !laufend.endeZeit
+  ) {
+    throw new Error(t('err.topicRunning'))
+  }
+
+  const db = getDb()
+  // Zeit bleibt am Projekt: Notiz leeren → Bucket „ohne Kurztext“
+  const cleared = db
+    .prepare(
+      `UPDATE zeitbuchungen
+       SET notiz = ''
+       WHERE projekt_id = ?
+         AND datum = ?
+         AND TRIM(COALESCE(notiz, '')) = ?`
+    )
+    .run(pid, datum, text)
+
+  const removed = db
+    .prepare(
+      `DELETE FROM tages_themen
+       WHERE projekt_id = ?
+         AND datum = ?
+         AND TRIM(kurztext) = ?`
+    )
+    .run(pid, datum, text)
+
+  if (cleared.changes <= 0 && removed.changes <= 0) {
+    throw new Error(t('err.topicNotFound'))
+  }
+
+  return true
+}
+
+/**
+ * Verteilt abgeschlossene Zeit ohne Kurztext eines Auftrags auf Topics.
+ * Nicht zugewiesene Minuten bleiben ohne Kurztext. Laufende Timer bleiben unberührt.
+ */
+export function redistributeOhneKurztext(
+  projektId: number,
+  datum: string,
+  allocations: TopicVerteilung[]
+): number {
+  const projekt = getProjekt(projektId)
+  if (!projekt) {
+    throw new Error(t('err.projectNotFound'))
+  }
+
+  const cleaned = (allocations ?? [])
+    .map((a) => ({
+      kurztext: (a.kurztext ?? '').trim(),
+      minuten: Math.max(0, Math.floor(Number(a.minuten) || 0))
+    }))
+    .filter((a) => a.kurztext.length > 0 && a.minuten > 0)
+
+  const want = cleaned.reduce((sum, a) => sum + a.minuten, 0)
+  if (want <= 0) {
+    return 0
+  }
+
+  const emptyCompleted = listBuchungenByDatum(datum)
+    .filter(
+      (b) =>
+        b.projektId === projektId &&
+        (b.notiz ?? '').trim() === '' &&
+        istBuchungAbgeschlossen(b)
+    )
+    .sort((a, b) => a.id - b.id)
+
+  const available = emptyCompleted.reduce((sum, b) => sum + (b.dauerMinuten ?? 0), 0)
+  if (want > available) {
+    throw new Error(t('err.redistributeTooMuch', { want, available }))
+  }
+
+  const insertStmt = getDb().prepare(
+    `INSERT INTO zeitbuchungen
+      (projekt_id, datum, start_zeit, ende_zeit, dauer_minuten, notiz, quelle)
+     VALUES (?, ?, NULL, NULL, ?, ?, 'manuell')`
+  )
+  const themaStmt = getDb().prepare(
+    `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
+  )
+  const updateDauerStmt = getDb().prepare(
+    `UPDATE zeitbuchungen
+     SET dauer_minuten = ?, start_zeit = NULL, ende_zeit = NULL, quelle = 'manuell',
+         sap_ueberfuehrt_am = NULL
+     WHERE id = ?`
+  )
+  const deleteStmt = getDb().prepare(`DELETE FROM zeitbuchungen WHERE id = ?`)
+
+  const tx = getDb().transaction(() => {
+    // Pool aus leeren Buchungen von hinten aufbrauchen
+    let remaining = want
+    const pool = emptyCompleted.map((b) => ({
+      id: b.id,
+      minuten: b.dauerMinuten ?? 0
+    }))
+
+    for (let i = pool.length - 1; i >= 0 && remaining > 0; i -= 1) {
+      const entry = pool[i]
+      if (entry.minuten <= 0) continue
+      const take = Math.min(entry.minuten, remaining)
+      entry.minuten -= take
+      remaining -= take
+      if (entry.minuten <= 0) {
+        deleteStmt.run(entry.id)
+      } else {
+        updateDauerStmt.run(entry.minuten, entry.id)
+      }
+    }
+
+    let moved = 0
+    for (const alloc of cleaned) {
+      themaStmt.run(datum, projektId, alloc.kurztext)
+      insertStmt.run(projektId, datum, alloc.minuten, alloc.kurztext)
+      moved += alloc.minuten
+    }
+    return moved
+  })
+
+  return tx()
+}
+
 export function listProjekteMitZeiten(): ProjektMitZeit[] {
   const projekte = listProjekte(true)
   const laufend = getLaufenderTimer()
@@ -821,9 +1252,10 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
     .all(heute) as Array<{ id: number; minuten: number }>
   const sumMap = new Map(summen.map((s) => [s.id, Number(s.minuten)]))
   const heuteMap = new Map(summenHeute.map((s) => [s.id, Number(s.minuten)]))
-  const heuteBuchungen = listBuchungenByDatum(heute).filter(istBuchungAbgeschlossen)
+  const alleHeute = listBuchungenByDatum(heute)
+  const heuteAbgeschlossen = alleHeute.filter(istBuchungAbgeschlossen)
   const sapByProjekt = new Map<number, Zeitbuchung[]>()
-  for (const b of heuteBuchungen) {
+  for (const b of heuteAbgeschlossen) {
     const list = sapByProjekt.get(b.projektId) ?? []
     list.push(b)
     sapByProjekt.set(b.projektId, list)
@@ -835,12 +1267,8 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
     let heuteMinuten = heuteAbgeschlossenMinuten
     const timerLaeuft = laufend?.projektId === p.id
     if (timerLaeuft && laufend?.startZeit) {
-      const [sh, sm] = laufend.startZeit.split(':').map(Number)
-      const now = new Date()
-      let diff = now.getHours() * 60 + now.getMinutes() - (sh * 60 + sm)
-      if (diff < 0) diff += 24 * 60
+      const diff = laufendeTimerMinuten(laufend)
       gesamtMinuten += diff
-      // Laufender Timer zählt für „heute“, wenn er am heutigen Datum gestartet wurde
       if (laufend.datum === heute) {
         heuteMinuten += diff
       }
@@ -853,6 +1281,7 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
       heuteAbgeschlossenMinuten,
       heuteSapStatus: sap.status,
       heuteSapUeberfuehrtAm: sap.zuletztUeberfuehrtAm,
+      themen: buildThemenFuerProjekt(p.id, heute, alleHeute, laufend),
       timerLaeuft,
       timerStartZeit: timerLaeuft ? laufend?.startZeit ?? null : null
     }
@@ -878,12 +1307,13 @@ export function startTimer(projektId: number, notiz = ''): ZeitbuchungMitProjekt
   // Pause (Zeit ohne Auftrag) beenden, sobald wieder auf einen Auftrag gebucht wird
   endPauseIfAny(anwesenheit)
 
+  const topic = notiz.trim()
   const laufend = getLaufenderTimer()
   if (laufend) {
-    if (laufend.projektId === projektId) {
+    if (laufend.projektId === projektId && (laufend.notiz ?? '').trim() === topic) {
       return laufend
     }
-    // Wechsel: alten Timer stoppen, ohne dazwischen Pause zu öffnen
+    // Wechsel (auch gleiches Projekt, anderes Topic): ohne Pause dazwischen
     stopTimerInternal({ enterPause: false })
   }
 
@@ -891,13 +1321,21 @@ export function startTimer(projektId: number, notiz = ''): ZeitbuchungMitProjekt
   const datum = formatDate(now)
   const startZeit = formatTime(now)
 
+  if (topic) {
+    getDb()
+      .prepare(
+        `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
+      )
+      .run(datum, projektId, topic)
+  }
+
   const result = getDb()
     .prepare(
       `INSERT INTO zeitbuchungen
         (projekt_id, datum, start_zeit, ende_zeit, dauer_minuten, notiz, quelle)
        VALUES (?, ?, ?, NULL, NULL, ?, 'timer')`
     )
-    .run(projektId, datum, startZeit, notiz.trim())
+    .run(projektId, datum, startZeit, topic)
 
   return getBuchungMitProjekt(Number(result.lastInsertRowid))
 }
@@ -1008,7 +1446,7 @@ export function resolveIdleGap(
         startZeit: formatTime(sliceStart),
         endeZeit: formatTime(sliceEnd > ende ? ende : sliceEnd),
         dauerMinuten: alloc.minuten,
-        notiz: projekt.kurztext?.trim() ?? '',
+        notiz: '',
         quelle: 'manuell'
       })
     }
@@ -1035,8 +1473,7 @@ export function resolveIdleGap(
   tx()
 
   if (input.fortsetzenProjektId != null) {
-    const projekt = getProjekt(input.fortsetzenProjektId)
-    startTimer(input.fortsetzenProjektId, projekt?.kurztext?.trim() ?? '')
+    startTimer(input.fortsetzenProjektId, input.fortsetzenNotiz?.trim() ?? '')
   } else {
     beginPauseIfNeeded(offen.id as number)
   }
@@ -1060,7 +1497,7 @@ export function getEinstellungen(): Einstellungen {
     csvSpalten = [...DEFAULT_CSV_SPALTEN]
   } else {
     csvSpalten = csvSpalten.map((c) => (c === 'notiz' ? 'kurztext' : c))
-    for (const col of ['auftragsnummer', 'arbeitsplatz', 'kurztext'] as const) {
+    for (const col of ['auftragsnummer', 'arbeitsplatz', 'kurztext', 'sapUeberfuehrt'] as const) {
       if (!csvSpalten.includes(col)) {
         csvSpalten.push(col)
       }
@@ -1073,6 +1510,17 @@ export function getEinstellungen(): Einstellungen {
     csvTrennzeichen: map.csvTrennzeichen ?? ';',
     csvSpalten,
     alwaysOnTopBar: map.alwaysOnTopBar === '1' || map.alwaysOnTopBar === 'true',
+    floatBarMode: map.floatBarMode === 'slideout' ? 'slideout' : 'free',
+    floatBarEdge:
+      map.floatBarEdge === 'left' || map.floatBarEdge === 'right' || map.floatBarEdge === 'top'
+        ? map.floatBarEdge
+        : 'top',
+    floatBarEdgeOffset: (() => {
+      const raw = map.floatBarEdgeOffset
+      if (raw === undefined || raw === null || String(raw).trim() === '') return null
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : null
+    })(),
     darkMode: map.darkMode === '1' || map.darkMode === 'true',
     idleDetectionEnabled:
       map.idleDetectionEnabled === undefined
@@ -1112,6 +1560,19 @@ export function saveEinstellungen(settings: Einstellungen): Einstellungen {
     upsert.run('csvTrennzeichen', settings.csvTrennzeichen || ';')
     upsert.run('csvSpalten', JSON.stringify(settings.csvSpalten))
     upsert.run('alwaysOnTopBar', settings.alwaysOnTopBar ? '1' : '0')
+    upsert.run('floatBarMode', settings.floatBarMode === 'slideout' ? 'slideout' : 'free')
+    upsert.run(
+      'floatBarEdge',
+      settings.floatBarEdge === 'left' || settings.floatBarEdge === 'right'
+        ? settings.floatBarEdge
+        : 'top'
+    )
+    upsert.run(
+      'floatBarEdgeOffset',
+      settings.floatBarEdgeOffset == null || !Number.isFinite(settings.floatBarEdgeOffset)
+        ? ''
+        : String(Math.round(settings.floatBarEdgeOffset))
+    )
     upsert.run('darkMode', settings.darkMode ? '1' : '0')
     upsert.run('idleDetectionEnabled', settings.idleDetectionEnabled ? '1' : '0')
     upsert.run(
@@ -1175,7 +1636,10 @@ export function formatDateDe(isoDate: string): string {
   return `${d}.${m}.${y}`
 }
 
+/** Dauer als hh:mm:ss für CSV (Excel-/SAP-freundlich, ohne Dezimal-Komma). */
 export function minutenZuStundenCsv(minuten: number): string {
-  const hours = minuten / 60
-  return hours.toFixed(2).replace('.', ',')
+  const total = Math.max(0, Math.round(minuten))
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`
 }

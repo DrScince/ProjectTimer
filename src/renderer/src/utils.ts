@@ -71,3 +71,60 @@ export function addDaysIso(iso: string, days: number): string {
   const dd = String(date.getDate()).padStart(2, '0')
   return `${yy}-${mm}-${dd}`
 }
+
+/** YYYY-MM aus ISO-Datum */
+export function monthKeyFromIso(iso: string): string {
+  return iso.slice(0, 7)
+}
+
+export function monthStartIso(monthKey: string): string {
+  return `${monthKey}-01`
+}
+
+export function monthEndIso(monthKey: string): string {
+  const [y, m] = monthKey.split('-').map(Number)
+  const last = new Date(y, m, 0).getDate()
+  return `${monthKey}-${String(last).padStart(2, '0')}`
+}
+
+export function addMonthsKey(monthKey: string, delta: number): string {
+  const [y, m] = monthKey.split('-').map(Number)
+  const date = new Date(y, m - 1 + delta, 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+/** HH:MM:SS oder HH:MM → HH:MM */
+export function formatZeitHm(zeit: string | null | undefined): string {
+  if (!zeit) return '–'
+  const parts = zeit.split(':')
+  if (parts.length < 2) return zeit
+  return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`
+}
+
+export type CalendarCell = {
+  datum: string | null
+  inMonth: boolean
+}
+
+/** Kalenderzellen Mo–So für einen Monat (YYYY-MM) */
+export function buildMonthCells(monthKey: string): CalendarCell[] {
+  const [y, m] = monthKey.split('-').map(Number)
+  const first = new Date(y, m - 1, 1)
+  const daysInMonth = new Date(y, m, 0).getDate()
+  // Mo=0 … So=6
+  const startPad = (first.getDay() + 6) % 7
+  const cells: CalendarCell[] = []
+  for (let i = 0; i < startPad; i += 1) {
+    cells.push({ datum: null, inMonth: false })
+  }
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    cells.push({
+      datum: `${monthKey}-${String(day).padStart(2, '0')}`,
+      inMonth: true
+    })
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push({ datum: null, inMonth: false })
+  }
+  return cells
+}

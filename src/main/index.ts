@@ -1,19 +1,23 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { writeFileSync, readFileSync } from 'fs'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { existsSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import {
   closeDatabase,
   createBuchung,
   createProjekt,
+  createTagesThema,
   deleteBuchung,
   deleteProjekt,
+  deleteTagesThema,
   gehen,
   getAnwesenheit,
+  listAnwesenheitMinutenByRange,
   getEinstellungen,
   getLaufenderTimer,
   initDatabase,
   kommen,
   listBuchungenByDatum,
+  listBuchungenByRange,
   listProjekte,
   listProjekteMitZeiten,
   pauseToggle,
@@ -32,17 +36,21 @@ import {
   markSapByDatum,
   clearSapByDatum,
   markSapByDatumProjekt,
-  clearSapByDatumProjekt
+  clearSapByDatumProjekt,
+  markSapByDatumProjektNotiz,
+  clearSapByDatumProjektNotiz,
+  redistributeOhneKurztext,
+  moveProjekt,
+  reorderProjekte
 } from './database'
-import {
-  buildCsvContent,
-  buildCsvVorschau,
-  getWochenUebersicht,
-  markExportAsSapTransferred
-} from './services'
+import { buildCsvContent, buildCsvVorschau, getWochenUebersicht } from './services'
+import { buildExcelBuffer, buildPdfBuffer } from './exportReports'
 import {
   destroyFloatingBar,
+  getFloatBarLayout,
   getFloatingBarBounds,
+  persistFloatingBarEdgeOffset,
+  setFloatBarExpanded,
   setFloatingBarPosition,
   syncFloatingBar
 } from './floatingBar'
@@ -57,6 +65,12 @@ import {
   runStartupStempel,
   startAutoGehenOnShutdown
 } from './autoStempel'
+import {
+  getUpdateInfo,
+  installDownloadedUpdate,
+  openPortableDownload,
+  startAutoUpdater
+} from './updater'
 import {
   createTray,
   destroyTray,
@@ -100,7 +114,23 @@ function sendWindowState(win: BrowserWindow): void {
   })
 }
 
+function resolveAppIconPath(): string | undefined {
+  const candidates = [
+    join(__dirname, '../../resources/icon.ico'),
+    join(__dirname, '../../resources/icon.png'),
+    join(__dirname, '../../resources/tray.png'),
+    join(process.resourcesPath, 'icon.ico'),
+    join(process.resourcesPath, 'icon.png'),
+    join(process.resourcesPath, 'tray.png')
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
 function createWindow(): void {
+  const icon = resolveAppIconPath()
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -111,6 +141,7 @@ function createWindow(): void {
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#0f172a',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -163,8 +194,39 @@ function registerIpc(): void {
     deleteProjekt(id)
     return true
   })
+  ipcMain.handle('projekte:move', (_e, id: number, direction: 'up' | 'down') => {
+    const list = moveProjekt(id, direction)
+    broadcastStatusChanged()
+    return list
+  })
+  ipcMain.handle('projekte:reorder', (_e, orderedIds: number[]) => {
+    const list = reorderProjekte(orderedIds ?? [])
+    broadcastStatusChanged()
+    return list
+  })
+  ipcMain.handle('themen:create', (_e, projektId: number, kurztext: string) => {
+    const thema = createTagesThema(projektId, kurztext)
+    broadcastStatusChanged()
+    return thema
+  })
+  ipcMain.handle('themen:delete', (_e, projektId: number, kurztext: string) => {
+    const ok = deleteTagesThema(projektId, kurztext)
+    broadcastStatusChanged()
+    return ok
+  })
+  ipcMain.handle(
+    'themen:redistribute',
+    (_e, projektId: number, datum: string, allocations: Array<{ kurztext: string; minuten: number }>) => {
+      const moved = redistributeOhneKurztext(projektId, datum, allocations ?? [])
+      broadcastStatusChanged()
+      return moved
+    }
+  )
 
   ipcMain.handle('anwesenheit:get', () => getAnwesenheit())
+  ipcMain.handle('anwesenheit:listMinutenByRange', (_e, von: string, bis: string) =>
+    listAnwesenheitMinutenByRange(String(von ?? ''), String(bis ?? ''))
+  )
   ipcMain.handle('anwesenheit:kommen', () => {
     const result = kommen()
     broadcastStatusChanged()
@@ -248,6 +310,9 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('buchungen:listByDatum', (_e, datum: string) => listBuchungenByDatum(datum))
+  ipcMain.handle('buchungen:listByRange', (_e, von: string, bis: string) =>
+    listBuchungenByRange(String(von ?? ''), String(bis ?? ''))
+  )
   ipcMain.handle('buchungen:create', (_e, input: ZeitbuchungInput) => createBuchung(input))
   ipcMain.handle('buchungen:update', (_e, id: number, input: ZeitbuchungInput) =>
     updateBuchung(id, input)
@@ -268,6 +333,16 @@ function registerIpc(): void {
   ipcMain.handle(
     'buchungen:clearSapDatumProjekt',
     (_e, datum: string, projektId: number) => clearSapByDatumProjekt(datum, projektId)
+  )
+  ipcMain.handle(
+    'buchungen:markSapDatumProjektNotiz',
+    (_e, datum: string, projektId: number, kurztext: string) =>
+      markSapByDatumProjektNotiz(datum, projektId, kurztext ?? '')
+  )
+  ipcMain.handle(
+    'buchungen:clearSapDatumProjektNotiz',
+    (_e, datum: string, projektId: number, kurztext: string) =>
+      clearSapByDatumProjektNotiz(datum, projektId, kurztext ?? '')
   )
 
   ipcMain.handle('timer:get', () => getLaufenderTimer())
@@ -317,6 +392,9 @@ function registerIpc(): void {
   ipcMain.handle('floating:setPosition', (_e, x: number, y: number) => {
     setFloatingBarPosition(x, y)
   })
+  ipcMain.handle('floating:persistEdgeOffset', () => persistFloatingBarEdgeOffset())
+  ipcMain.handle('floating:getLayout', () => getFloatBarLayout())
+  ipcMain.handle('floating:setExpanded', (_e, next: boolean) => setFloatBarExpanded(Boolean(next)))
 
   ipcMain.handle('idle:getPrompt', () => getOpenIdlePrompt())
   ipcMain.handle('idle:resolve', (_e, input: IdleResolveInput) => {
@@ -341,15 +419,79 @@ function registerIpc(): void {
       })
 
       if (result.canceled || !result.filePath) {
-        return { canceled: true, marked: 0 }
+        return { canceled: true }
       }
 
       writeFileSync(result.filePath, content, 'utf-8')
-      let marked = 0
-      if (options.markiereUeberfuehrt) {
-        marked = markExportAsSapTransferred(von, bis, options)
+      return { canceled: false, path: result.filePath }
+    }
+  )
+  ipcMain.handle(
+    'export:excel',
+    async (_e, von: string, bis: string, options: ExportOptions = {}) => {
+      const mode = options.excelMode ?? 'ask'
+      let action: 'save' | 'open' | 'cancel' = 'cancel'
+
+      if (mode === 'save' || mode === 'open') {
+        action = mode
+      } else {
+        const choice = await dialog.showMessageBox({
+          type: 'question',
+          buttons: [t('export.excelSave'), t('export.excelOpen'), t('export.cancel')],
+          defaultId: 0,
+          cancelId: 2,
+          title: t('dialog.saveExcel'),
+          message: t('export.excelChoice')
+        })
+        if (choice.response === 0) action = 'save'
+        else if (choice.response === 1) action = 'open'
       }
-      return { canceled: false, path: result.filePath, marked }
+
+      if (action === 'cancel') {
+        return { canceled: true }
+      }
+
+      const buffer = await buildExcelBuffer(von, bis, options)
+
+      if (action === 'open') {
+        const tmpPath = join(
+          app.getPath('temp'),
+          `ProjectTimer_zeiten_${von}_${bis}_${Date.now()}.xlsx`
+        )
+        writeFileSync(tmpPath, buffer)
+        const openError = await shell.openPath(tmpPath)
+        if (openError) {
+          throw new Error(openError)
+        }
+        return { canceled: false, path: tmpPath, opened: true }
+      }
+
+      const result = await dialog.showSaveDialog({
+        title: t('dialog.saveExcel'),
+        defaultPath: `zeiten_${von}_${bis}.xlsx`,
+        filters: [{ name: 'Excel', extensions: ['xlsx'] }]
+      })
+      if (result.canceled || !result.filePath) {
+        return { canceled: true }
+      }
+      writeFileSync(result.filePath, buffer)
+      return { canceled: false, path: result.filePath, opened: false }
+    }
+  )
+  ipcMain.handle(
+    'export:pdf',
+    async (_e, von: string, bis: string, options: ExportOptions = {}) => {
+      const buffer = await buildPdfBuffer(von, bis, options)
+      const result = await dialog.showSaveDialog({
+        title: t('dialog.savePdf'),
+        defaultPath: `zeiten_${von}_${bis}.pdf`,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+      if (result.canceled || !result.filePath) {
+        return { canceled: true }
+      }
+      writeFileSync(result.filePath, buffer)
+      return { canceled: false, path: result.filePath }
     }
   )
   ipcMain.handle('export:markSap', (_e, ids: number[]) => markBuchungenSapUeberfuehrt(ids ?? []))
@@ -374,6 +516,10 @@ function registerIpc(): void {
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
     return Boolean(win && !win.isDestroyed() && win.isMaximized())
   })
+
+  ipcMain.handle('updater:getStatus', () => getUpdateInfo())
+  ipcMain.handle('updater:install', () => installDownloadedUpdate())
+  ipcMain.handle('updater:openDownload', () => openPortableDownload())
 }
 
 app.setName('ProjectTimer')
@@ -399,6 +545,8 @@ app.whenReady().then(() => {
   if (startup.restartedSession || startup.autoKommen) {
     broadcastStatusChanged()
   }
+
+  startAutoUpdater(() => mainWindow)
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {

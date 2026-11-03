@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useI18n } from './i18n'
+import logoUrl from './assets/logo.png'
 
 export default function TitleBar() {
   const { t } = useI18n()
@@ -16,6 +17,7 @@ export default function TitleBar() {
         className="titlebar-drag"
         onDoubleClick={() => void window.api.window.maximizeToggle()}
       >
+        <img className="titlebar-logo" src={logoUrl} alt="" width={18} height={18} />
         <span className="titlebar-title">ProjectTimer</span>
       </div>
       <div className="titlebar-controls">

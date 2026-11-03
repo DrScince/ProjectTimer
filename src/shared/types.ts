@@ -4,6 +4,27 @@ export type BuchungQuelle = 'timer' | 'manuell'
 
 export type SapTransferStatus = 'offen' | 'ueberfuehrt' | 'gemischt'
 
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'not-available'
+  | 'error'
+
+export type UpdateChannel = 'installer' | 'portable'
+
+export interface AppUpdateInfo {
+  status: UpdateStatus
+  channel: UpdateChannel
+  currentVersion: string
+  availableVersion: string | null
+  progressPercent: number | null
+  downloadUrl: string | null
+  error: string | null
+}
+
 export interface Projekt {
   id: number
   name: string
@@ -16,6 +37,8 @@ export interface Projekt {
   empfaenger: string
   leistungsart: string
   aktiv: boolean
+  /** Anzeigereihenfolge (kleiner = weiter oben) */
+  sortOrder: number
   erstelltAm: string
 }
 
@@ -69,6 +92,15 @@ export interface ZeitbuchungInput {
 /** system = OS-Sprache, sonst fest de/en */
 export type LanguagePreference = 'system' | 'de' | 'en'
 
+export type FloatBarMode = 'free' | 'slideout'
+export type FloatBarEdge = 'top' | 'left' | 'right'
+
+export interface FloatBarLayout {
+  mode: FloatBarMode
+  edge: FloatBarEdge
+  expanded: boolean
+}
+
 export interface Einstellungen {
   anzeigename: string
   personalnummer: string
@@ -76,6 +108,15 @@ export interface Einstellungen {
   csvSpalten: string[]
   /** Kompakte Always-on-Top-Leiste anzeigen */
   alwaysOnTopBar: boolean
+  /** Frei schwebend oder an Kante als Slideout */
+  floatBarMode: FloatBarMode
+  /** Kante für Slideout-Modus */
+  floatBarEdge: FloatBarEdge
+  /**
+   * Versatz entlang der Kante in Pixeln (vom Work-Area-Ursprung).
+   * null = zentriert.
+   */
+  floatBarEdgeOffset: number | null
   /** Dunkles Erscheinungsbild der Hauptanwendung */
   darkMode: boolean
   /** PC-Sperre / Inaktivität erkennen */
@@ -111,6 +152,8 @@ export interface IdlePrompt {
   bis: string
   dauerMinuten: number
   previousProjektId: number | null
+  /** Kurztext/Topic des zuvor laufenden Timers */
+  previousNotiz: string
   projekte: IdlePromptProjekt[]
 }
 
@@ -125,6 +168,8 @@ export interface IdleResolveInput {
   allocations: IdleResolveAllocation[]
   /** Nach dem Buchen diesen Auftrag starten; null = Pause */
   fortsetzenProjektId: number | null
+  /** Topic/Kurztext beim Fortsetzen */
+  fortsetzenNotiz?: string
 }
 
 export interface FloatingBarStatus {
@@ -148,6 +193,30 @@ export interface Anwesenheit {
   istOffen: boolean
 }
 
+/** Summierte Anwesenheit (Stempelzeit) je Kalendertag */
+export interface AnwesenheitTagSumme {
+  datum: string
+  stempelMinuten: number
+}
+
+/** Tages-Topic unter einem Auftrag (Kurztext mit eigener Zeit) */
+export interface TagesThema {
+  projektId: number
+  kurztext: string
+  heuteMinuten: number
+  /** Abgeschlossene Minuten heute (ohne laufenden Timer) */
+  heuteAbgeschlossenMinuten: number
+  timerLaeuft: boolean
+  sapStatus: SapTransferStatus | 'leer'
+  sapUeberfuehrtAm: string | null
+}
+
+/** Nachträgliche Verteilung von Zeit ohne Kurztext auf Topics */
+export interface TopicVerteilung {
+  kurztext: string
+  minuten: number
+}
+
 export interface ProjektMitZeit extends Projekt {
   /** Gesamte gebuchte Zeit auf den Auftrag (alle Tage) */
   gesamtMinuten: number
@@ -159,6 +228,8 @@ export interface ProjektMitZeit extends Projekt {
   heuteSapStatus: SapTransferStatus | 'leer'
   /** Letzter SAP-Überführungszeitpunkt der heutigen Buchungen */
   heuteSapUeberfuehrtAm: string | null
+  /** Heutige Topics/Kurztexte dieses Auftrags */
+  themen: TagesThema[]
   timerLaeuft: boolean
   timerStartZeit: string | null
 }
@@ -221,6 +292,8 @@ export interface CsvVorschauZeile {
   empfaenger: string
   leistungsart: string
   kurztext: string
+  /** CSV-Feld: ja / nein / teilweise */
+  sapUeberfuehrt: string
   buchungIds: number[]
   sapStatus: SapTransferStatus
   /** Einheitlicher Überführungszeitpunkt, sonst null */
@@ -228,10 +301,12 @@ export interface CsvVorschauZeile {
 }
 
 export interface ExportOptions {
-  /** Nur Buchungen ohne SAP-Überführung */
+  /** @deprecated Immer alle Einträge; Filter entfernt */
   nurOffen?: boolean
   /** Nach erfolgreichem CSV-Speichern als überführt markieren */
   markiereUeberfuehrt?: boolean
+  /** Excel: speichern, direkt öffnen, oder nachfragen */
+  excelMode?: 'save' | 'open' | 'ask'
 }
 
 export const DEFAULT_CSV_SPALTEN = [
@@ -241,7 +316,8 @@ export const DEFAULT_CSV_SPALTEN = [
   'auftragsnummer',
   'arbeitsplatz',
   'projektKuerzel',
-  'kurztext'
+  'kurztext',
+  'sapUeberfuehrt'
 ] as const
 
 export const CSV_SPALTEN_LABELS: Record<string, string> = {
@@ -255,5 +331,6 @@ export const CSV_SPALTEN_LABELS: Record<string, string> = {
   empfaenger: 'Empfänger',
   leistungsart: 'Leistungsart',
   kurztext: 'Kurztext',
-  notiz: 'Kurztext'
+  notiz: 'Kurztext',
+  sapUeberfuehrt: 'SAP überführt'
 }

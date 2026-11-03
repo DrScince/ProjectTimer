@@ -1,67 +1,33 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { CsvVorschauZeile, SapTransferStatus } from '../../../shared/types'
 import { useI18n } from '../i18n'
 import { addDaysIso, formatDateTimeLocal, heuteIso } from '../utils'
 
-function rowKey(row: CsvVorschauZeile, index: number): string {
-  return `${row.datum}-${row.projektKuerzel}-${row.buchungIds.join(',')}-${index}`
-}
+type ExportKind = 'csv' | 'excel' | 'pdf'
 
 export default function ExportPage() {
   const { t, localeTag } = useI18n()
   const today = heuteIso()
   const [von, setVon] = useState(addDaysIso(today, -6))
   const [bis, setBis] = useState(today)
-  const [nurOffen, setNurOffen] = useState(true)
-  const [markiereUeberfuehrt, setMarkiereUeberfuehrt] = useState(true)
   const [rows, setRows] = useState<CsvVorschauZeile[]>([])
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState<ExportKind | null>(null)
 
   const loadPreview = useCallback(async () => {
     setError('')
     try {
-      const data = await window.api.export.vorschau(von, bis, { nurOffen })
+      const data = await window.api.export.vorschau(von, bis, {})
       setRows(data)
-      setSelected(new Set())
     } catch (err) {
       setError(err instanceof Error ? err.message : t('export.errPreview'))
     }
-  }, [von, bis, nurOffen, t])
+  }, [von, bis, t])
 
   useEffect(() => {
     void loadPreview()
   }, [loadPreview])
-
-  const selectedIds = useMemo(() => {
-    const ids = new Set<number>()
-    rows.forEach((row, index) => {
-      if (selected.has(rowKey(row, index))) {
-        for (const id of row.buchungIds) ids.add(id)
-      }
-    })
-    return Array.from(ids)
-  }, [rows, selected])
-
-  const allSelected = rows.length > 0 && selected.size === rows.length
-
-  function toggleAll(): void {
-    if (allSelected) {
-      setSelected(new Set())
-      return
-    }
-    setSelected(new Set(rows.map((row, index) => rowKey(row, index))))
-  }
-
-  function toggleRow(key: string): void {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
 
   function sapLabel(status: SapTransferStatus): string {
     if (status === 'ueberfuehrt') return t('export.sapDone')
@@ -69,59 +35,34 @@ export default function ExportPage() {
     return t('export.sapOpen')
   }
 
-  async function handleExport(): Promise<void> {
+  async function handleExport(kind: ExportKind): Promise<void> {
     setMessage('')
     setError('')
+    setBusy(kind)
     try {
-      const result = await window.api.export.csv(von, bis, {
-        nurOffen,
-        markiereUeberfuehrt
-      })
-      if (!result.canceled) {
-        const marked = result.marked ?? 0
-        if (markiereUeberfuehrt && marked > 0) {
+      if (kind === 'excel') {
+        const result = await window.api.export.excel(von, bis, { excelMode: 'ask' })
+        if (!result.canceled) {
           setMessage(
-            t('export.savedMarked', { path: result.path ?? '', count: marked })
+            result.opened
+              ? t('export.opened', { path: result.path ?? '' })
+              : t('export.saved', { path: result.path ?? '' })
           )
-        } else {
-          setMessage(t('export.saved', { path: result.path ?? '' }))
+          await loadPreview()
         }
+        return
+      }
+
+      const api = kind === 'csv' ? window.api.export.csv : window.api.export.pdf
+      const result = await api(von, bis, {})
+      if (!result.canceled) {
+        setMessage(t('export.saved', { path: result.path ?? '' }))
         await loadPreview()
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('export.errExport'))
-    }
-  }
-
-  async function handleMarkSelected(): Promise<void> {
-    setMessage('')
-    setError('')
-    if (selectedIds.length === 0) {
-      setError(t('export.selectNone'))
-      return
-    }
-    try {
-      const count = await window.api.export.markSap(selectedIds)
-      setMessage(t('export.markedCount', { count }))
-      await loadPreview()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('export.errExport'))
-    }
-  }
-
-  async function handleClearSelected(): Promise<void> {
-    setMessage('')
-    setError('')
-    if (selectedIds.length === 0) {
-      setError(t('export.selectNone'))
-      return
-    }
-    try {
-      const count = await window.api.export.clearSap(selectedIds)
-      setMessage(t('export.clearedCount', { count }))
-      await loadPreview()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('export.errExport'))
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -133,8 +74,29 @@ export default function ExportPage() {
           <p>{t('export.subtitle')}</p>
         </div>
         <div className="actions">
-          <button className="btn btn-primary" type="button" onClick={() => void handleExport()}>
-            {t('export.saveCsv')}
+          <button
+            className="btn"
+            type="button"
+            disabled={busy != null}
+            onClick={() => void handleExport('csv')}
+          >
+            {busy === 'csv' ? t('export.saving') : t('export.saveCsv')}
+          </button>
+          <button
+            className="btn btn-primary"
+            type="button"
+            disabled={busy != null}
+            onClick={() => void handleExport('excel')}
+          >
+            {busy === 'excel' ? t('export.saving') : t('export.saveExcel')}
+          </button>
+          <button
+            className="btn"
+            type="button"
+            disabled={busy != null}
+            onClick={() => void handleExport('pdf')}
+          >
+            {busy === 'pdf' ? t('export.saving') : t('export.savePdf')}
           </button>
         </div>
       </div>
@@ -163,24 +125,6 @@ export default function ExportPage() {
             />
           </div>
         </div>
-        <div className="export-options">
-          <label className="checkbox-list">
-            <input
-              type="checkbox"
-              checked={nurOffen}
-              onChange={(e) => setNurOffen(e.target.checked)}
-            />
-            <span>{t('export.onlyOpen')}</span>
-          </label>
-          <label className="checkbox-list">
-            <input
-              type="checkbox"
-              checked={markiereUeberfuehrt}
-              onChange={(e) => setMarkiereUeberfuehrt(e.target.checked)}
-            />
-            <span>{t('export.markOnSave')}</span>
-          </label>
-        </div>
         <p className="muted">{t('export.hint')}</p>
       </section>
 
@@ -189,24 +133,6 @@ export default function ExportPage() {
           <h2>
             {t('export.preview')} ({rows.length})
           </h2>
-          <div className="actions">
-            <button
-              className="btn btn-success"
-              type="button"
-              disabled={selectedIds.length === 0}
-              onClick={() => void handleMarkSelected()}
-            >
-              {t('export.markSelected')}
-            </button>
-            <button
-              className="btn btn-ghost"
-              type="button"
-              disabled={selectedIds.length === 0}
-              onClick={() => void handleClearSelected()}
-            >
-              {t('export.clearSelected')}
-            </button>
-          </div>
         </div>
         {rows.length === 0 ? (
           <div className="empty">{t('export.empty')}</div>
@@ -215,14 +141,6 @@ export default function ExportPage() {
             <table>
               <thead>
                 <tr>
-                  <th className="col-check">
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      onChange={toggleAll}
-                      aria-label={t('export.markSelected')}
-                    />
-                  </th>
                   <th>{t('export.colPersonal')}</th>
                   <th>{t('export.colDate')}</th>
                   <th>{t('export.colHours')}</th>
@@ -235,17 +153,11 @@ export default function ExportPage() {
               </thead>
               <tbody>
                 {rows.map((row, index) => {
-                  const key = rowKey(row, index)
                   const when = formatDateTimeLocal(row.sapUeberfuehrtAm, localeTag)
                   return (
-                    <tr key={key}>
-                      <td className="col-check">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(key)}
-                          onChange={() => toggleRow(key)}
-                        />
-                      </td>
+                    <tr
+                      key={`${row.datum}-${row.projektKuerzel}-${row.buchungIds.join(',')}-${index}`}
+                    >
                       <td>{row.personalnummer || '–'}</td>
                       <td>{row.datum}</td>
                       <td>{row.stunden}</td>

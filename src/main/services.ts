@@ -133,17 +133,20 @@ function sapStatusForIds(
   return { sapStatus: 'gemischt', sapUeberfuehrtAm: null }
 }
 
+function sapUeberfuehrtCsvLabel(status: SapTransferStatus): string {
+  if (status === 'ueberfuehrt') return 'ja'
+  if (status === 'gemischt') return 'teilweise'
+  return 'nein'
+}
+
 export function buildCsvVorschau(
   von: string,
   bis: string,
-  options: ExportOptions = {}
+  _options: ExportOptions = {}
 ): CsvVorschauZeile[] {
   const settings = getEinstellungen()
-  const nurOffen = Boolean(options.nurOffen)
-  let buchungen = listBuchungenByRange(von, bis).filter((b) => istAbgeschlossen(b))
-  if (nurOffen) {
-    buchungen = buchungen.filter((b) => !b.sapUeberfuehrtAm)
-  }
+  // Immer alle abgeschlossenen Buchungen im Zeitraum (SAP-Status als CSV-Spalte)
+  const buchungen = listBuchungenByRange(von, bis).filter((b) => istAbgeschlossen(b))
 
   const groups = new Map<
     string,
@@ -167,7 +170,9 @@ export function buildCsvVorschau(
     .sort((a, b) => {
       const byDate = a.buchung.datum.localeCompare(b.buchung.datum)
       if (byDate !== 0) return byDate
-      return a.buchung.projektKuerzel.localeCompare(b.buchung.projektKuerzel, 'de')
+      const byProjekt = a.buchung.projektKuerzel.localeCompare(b.buchung.projektKuerzel, 'de')
+      if (byProjekt !== 0) return byProjekt
+      return (a.buchung.notiz ?? '').localeCompare(b.buchung.notiz ?? '', 'de')
     })
     .map(({ buchung, minuten, items }) => {
       const sap = sapStatusForIds(items)
@@ -182,6 +187,7 @@ export function buildCsvVorschau(
         empfaenger: buchung.empfaenger,
         leistungsart: buchung.leistungsart,
         kurztext: buchung.notiz,
+        sapUeberfuehrt: sapUeberfuehrtCsvLabel(sap.sapStatus),
         buchungIds: items.map((item: ZeitbuchungMitProjekt) => item.id),
         sapStatus: sap.sapStatus,
         sapUeberfuehrtAm: sap.sapUeberfuehrtAm
@@ -191,7 +197,10 @@ export function buildCsvVorschau(
 
 function escapeCsvField(value: string, delimiter: string): string {
   const needsQuotes =
-    value.includes(delimiter) || value.includes('"') || value.includes('\n') || value.includes('\r')
+    value.includes(delimiter) ||
+    value.includes('"') ||
+    value.includes('\n') ||
+    value.includes('\r')
   if (!needsQuotes) return value
   return `"${value.replace(/"/g, '""')}"`
 }

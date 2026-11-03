@@ -7,6 +7,8 @@ import SettingsPage from './pages/SettingsPage'
 import FloatingBar from './FloatingBar'
 import IdlePromptModal from './IdlePromptModal'
 import TitleBar from './TitleBar'
+import logoUrl from './assets/logo.png'
+import UpdateBanner from './UpdateBanner'
 import { I18nProvider, useI18n } from './i18n'
 import type { Einstellungen, IdlePrompt } from '../../shared/types'
 import {
@@ -71,11 +73,15 @@ function MainShell({
   return (
     <div className="app-frame">
       <TitleBar />
+      <UpdateBanner />
       <div className="app-shell">
         <aside className="sidebar">
           <div className="brand">
-            <strong>ProjectTimer</strong>
-            <span>{t('brand.subtitle')}</span>
+            <img className="brand-logo" src={logoUrl} alt="" width={48} height={48} />
+            <div className="brand-text">
+              <strong>ProjectTimer</strong>
+              <span>{t('brand.subtitle')}</span>
+            </div>
           </div>
           <nav className="nav">
             {NAV.map((item) => (

@@ -12,6 +12,9 @@ export default function SettingsPage() {
     csvTrennzeichen: ';',
     csvSpalten: [...DEFAULT_CSV_SPALTEN],
     alwaysOnTopBar: false,
+    floatBarMode: 'free',
+    floatBarEdge: 'top',
+    floatBarEdgeOffset: null,
     darkMode: false,
     idleDetectionEnabled: true,
     idleThresholdMinutes: 5,
@@ -151,6 +154,48 @@ export default function SettingsPage() {
             </label>
             <p className="muted">{t('settings.alwaysOnTopHint')}</p>
           </div>
+          {settings.alwaysOnTopBar && (
+            <>
+              <div className="field">
+                <label htmlFor="float-mode">{t('settings.floatMode')}</label>
+                <select
+                  id="float-mode"
+                  value={settings.floatBarMode}
+                  onChange={(e) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      floatBarMode: e.target.value as Einstellungen['floatBarMode']
+                    }))
+                  }
+                >
+                  <option value="free">{t('settings.floatModeFree')}</option>
+                  <option value="slideout">{t('settings.floatModeSlideout')}</option>
+                </select>
+                <p className="muted">{t('settings.floatModeHint')}</p>
+              </div>
+              {settings.floatBarMode === 'slideout' && (
+                <div className="field">
+                  <label htmlFor="float-edge">{t('settings.floatEdge')}</label>
+                  <select
+                    id="float-edge"
+                    value={settings.floatBarEdge}
+                    onChange={(e) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        floatBarEdge: e.target.value as Einstellungen['floatBarEdge'],
+                        floatBarEdgeOffset: null
+                      }))
+                    }
+                  >
+                    <option value="top">{t('settings.floatEdgeTop')}</option>
+                    <option value="left">{t('settings.floatEdgeLeft')}</option>
+                    <option value="right">{t('settings.floatEdgeRight')}</option>
+                  </select>
+                  <p className="muted">{t('settings.floatEdgeHint')}</p>
+                </div>
+              )}
+            </>
+          )}
           <div className="field full">
             <label className="checkbox-list">
               <span>

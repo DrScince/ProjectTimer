@@ -43,12 +43,22 @@ export default function ProjectsPage() {
       kuerzel: projekt.kuerzel,
       auftragsnummer: projekt.auftragsnummer,
       arbeitsplatz: projekt.arbeitsplatz,
-      kurztext: projekt.kurztext,
+      kurztext: '',
       empfaengerArt: projekt.empfaengerArt,
       empfaenger: projekt.empfaenger,
       leistungsart: projekt.leistungsart,
       aktiv: projekt.aktiv
     })
+  }
+
+  async function handleMove(id: number, direction: 'up' | 'down'): Promise<void> {
+    setError('')
+    try {
+      const list = await window.api.projekte.move(id, direction)
+      setProjekte(list)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('projects.errSave'))
+    }
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -199,40 +209,6 @@ export default function ProjectsPage() {
               required
             />
           </div>
-          <div className="field full">
-            <label htmlFor="proj-kurztext">{t('projects.shortText')}</label>
-            <input
-              id="proj-kurztext"
-              value={form.kurztext ?? ''}
-              onChange={(e) => setForm((prev) => ({ ...prev, kurztext: e.target.value }))}
-              placeholder={t('projects.shortTextPh')}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="proj-art">{t('projects.receiverType')}</label>
-            <select
-              id="proj-art"
-              value={form.empfaengerArt}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  empfaengerArt: e.target.value as EmpfaengerArt
-                }))
-              }
-            >
-              <option value="Kostenstelle">{t('stempel.costCenter')}</option>
-              <option value="Innenauftrag">{t('stempel.internalOrder')}</option>
-              <option value="PSP-Element">{t('stempel.psp')}</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="proj-empfaenger">{t('projects.receiver')}</label>
-            <input
-              id="proj-empfaenger"
-              value={form.empfaenger}
-              onChange={(e) => setForm((prev) => ({ ...prev, empfaenger: e.target.value }))}
-            />
-          </div>
           <div className="field">
             <label htmlFor="proj-leistungsart">{t('projects.activityType')}</label>
             <input
@@ -276,6 +252,7 @@ export default function ProjectsPage() {
             <table>
               <thead>
                 <tr>
+                  <th>{t('projects.colOrderPos')}</th>
                   <th>{t('projects.colCode')}</th>
                   <th>{t('projects.colName')}</th>
                   <th>{t('projects.colOrder')}</th>
@@ -285,8 +262,32 @@ export default function ProjectsPage() {
                 </tr>
               </thead>
               <tbody>
-                {projekte.map((p) => (
+                {projekte.map((p, index) => (
                   <tr key={p.id}>
+                    <td>
+                      <div className="actions reorder-actions">
+                        <button
+                          className="btn btn-ghost btn-small"
+                          type="button"
+                          disabled={index === 0}
+                          title={t('projects.moveUp')}
+                          aria-label={t('projects.moveUp')}
+                          onClick={() => void handleMove(p.id, 'up')}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-small"
+                          type="button"
+                          disabled={index === projekte.length - 1}
+                          title={t('projects.moveDown')}
+                          aria-label={t('projects.moveDown')}
+                          onClick={() => void handleMove(p.id, 'down')}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </td>
                     <td>{p.kuerzel}</td>
                     <td>{p.name}</td>
                     <td>{p.auftragsnummer || '–'}</td>

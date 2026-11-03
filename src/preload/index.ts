@@ -1,19 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Anwesenheit,
+  AnwesenheitTagSumme,
   Einstellungen,
+  FloatBarLayout,
   FloatingBarStatus,
   IdlePrompt,
   IdleResolveInput,
   Projekt,
   ProjektInput,
   ProjektMitZeit,
+  TagesThema,
+  TopicVerteilung,
   WochenUebersicht,
   ZeitbuchungInput,
   ZeitbuchungMitProjekt,
   CsvVorschauZeile,
   ExportOptions,
-  SapTagesStatus
+  SapTagesStatus,
+  AppUpdateInfo
 } from '../shared/types'
 
 const api = {
@@ -28,6 +33,10 @@ const api = {
     updateKurztext: (id: number, kurztext: string): Promise<Projekt> =>
       ipcRenderer.invoke('projekte:updateKurztext', id, kurztext),
     delete: (id: number): Promise<boolean> => ipcRenderer.invoke('projekte:delete', id),
+    move: (id: number, direction: 'up' | 'down'): Promise<Projekt[]> =>
+      ipcRenderer.invoke('projekte:move', id, direction),
+    reorder: (orderedIds: number[]): Promise<Projekt[]> =>
+      ipcRenderer.invoke('projekte:reorder', orderedIds),
     exportJson: (): Promise<{ canceled: boolean; path?: string; count?: number }> =>
       ipcRenderer.invoke('projekte:export'),
     importJson: (): Promise<{ canceled: boolean; created?: number; updated?: number }> =>
@@ -35,6 +44,8 @@ const api = {
   },
   anwesenheit: {
     get: (): Promise<Anwesenheit | null> => ipcRenderer.invoke('anwesenheit:get'),
+    listMinutenByRange: (von: string, bis: string): Promise<AnwesenheitTagSumme[]> =>
+      ipcRenderer.invoke('anwesenheit:listMinutenByRange', von, bis),
     kommen: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:kommen'),
     gehen: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:gehen'),
     pauseToggle: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:pauseToggle')
@@ -42,6 +53,8 @@ const api = {
   buchungen: {
     listByDatum: (datum: string): Promise<ZeitbuchungMitProjekt[]> =>
       ipcRenderer.invoke('buchungen:listByDatum', datum),
+    listByRange: (von: string, bis: string): Promise<ZeitbuchungMitProjekt[]> =>
+      ipcRenderer.invoke('buchungen:listByRange', von, bis),
     create: (input: ZeitbuchungInput): Promise<ZeitbuchungMitProjekt> =>
       ipcRenderer.invoke('buchungen:create', input),
     update: (id: number, input: ZeitbuchungInput): Promise<ZeitbuchungMitProjekt> =>
@@ -58,7 +71,30 @@ const api = {
     markSapDatumProjekt: (datum: string, projektId: number): Promise<number> =>
       ipcRenderer.invoke('buchungen:markSapDatumProjekt', datum, projektId),
     clearSapDatumProjekt: (datum: string, projektId: number): Promise<number> =>
-      ipcRenderer.invoke('buchungen:clearSapDatumProjekt', datum, projektId)
+      ipcRenderer.invoke('buchungen:clearSapDatumProjekt', datum, projektId),
+    markSapDatumProjektNotiz: (
+      datum: string,
+      projektId: number,
+      kurztext: string
+    ): Promise<number> =>
+      ipcRenderer.invoke('buchungen:markSapDatumProjektNotiz', datum, projektId, kurztext),
+    clearSapDatumProjektNotiz: (
+      datum: string,
+      projektId: number,
+      kurztext: string
+    ): Promise<number> =>
+      ipcRenderer.invoke('buchungen:clearSapDatumProjektNotiz', datum, projektId, kurztext)
+  },
+  themen: {
+    create: (projektId: number, kurztext: string): Promise<TagesThema> =>
+      ipcRenderer.invoke('themen:create', projektId, kurztext),
+    delete: (projektId: number, kurztext: string): Promise<boolean> =>
+      ipcRenderer.invoke('themen:delete', projektId, kurztext),
+    redistribute: (
+      projektId: number,
+      datum: string,
+      allocations: TopicVerteilung[]
+    ): Promise<number> => ipcRenderer.invoke('themen:redistribute', projektId, datum, allocations)
   },
   timer: {
     get: (): Promise<ZeitbuchungMitProjekt | null> => ipcRenderer.invoke('timer:get'),
@@ -83,7 +119,17 @@ const api = {
     getBounds: (): Promise<{ x: number; y: number; width: number; height: number } | null> =>
       ipcRenderer.invoke('floating:getBounds'),
     setPosition: (x: number, y: number): Promise<void> =>
-      ipcRenderer.invoke('floating:setPosition', x, y)
+      ipcRenderer.invoke('floating:setPosition', x, y),
+    persistEdgeOffset: (): Promise<number | null> =>
+      ipcRenderer.invoke('floating:persistEdgeOffset'),
+    getLayout: (): Promise<FloatBarLayout> => ipcRenderer.invoke('floating:getLayout'),
+    setExpanded: (expanded: boolean): Promise<FloatBarLayout> =>
+      ipcRenderer.invoke('floating:setExpanded', expanded),
+    onLayout: (callback: (layout: FloatBarLayout) => void): (() => void) => {
+      const handler = (_event: unknown, layout: FloatBarLayout): void => callback(layout)
+      ipcRenderer.on('floating:layout', handler)
+      return () => ipcRenderer.removeListener('floating:layout', handler)
+    }
   },
   onStatusChanged: (callback: () => void): (() => void) => {
     const handler = (): void => callback()
@@ -114,8 +160,20 @@ const api = {
       von: string,
       bis: string,
       options: ExportOptions = {}
-    ): Promise<{ canceled: boolean; path?: string; marked?: number }> =>
+    ): Promise<{ canceled: boolean; path?: string }> =>
       ipcRenderer.invoke('export:csv', von, bis, options),
+    excel: (
+      von: string,
+      bis: string,
+      options: ExportOptions = {}
+    ): Promise<{ canceled: boolean; path?: string; opened?: boolean }> =>
+      ipcRenderer.invoke('export:excel', von, bis, options),
+    pdf: (
+      von: string,
+      bis: string,
+      options: ExportOptions = {}
+    ): Promise<{ canceled: boolean; path?: string }> =>
+      ipcRenderer.invoke('export:pdf', von, bis, options),
     markSap: (ids: number[]): Promise<number> => ipcRenderer.invoke('export:markSap', ids),
     clearSap: (ids: number[]): Promise<number> => ipcRenderer.invoke('export:clearSap', ids)
   },
@@ -128,6 +186,16 @@ const api = {
       const handler = (_event: unknown, state: { isMaximized: boolean }): void => callback(state)
       ipcRenderer.on('window:state', handler)
       return () => ipcRenderer.removeListener('window:state', handler)
+    }
+  },
+  updater: {
+    getStatus: (): Promise<AppUpdateInfo> => ipcRenderer.invoke('updater:getStatus'),
+    install: (): Promise<boolean> => ipcRenderer.invoke('updater:install'),
+    openDownload: (): Promise<boolean> => ipcRenderer.invoke('updater:openDownload'),
+    onStatus: (callback: (info: AppUpdateInfo) => void): (() => void) => {
+      const handler = (_event: unknown, info: AppUpdateInfo): void => callback(info)
+      ipcRenderer.on('updater:status', handler)
+      return () => ipcRenderer.removeListener('updater:status', handler)
     }
   }
 }

@@ -170,7 +170,11 @@ export default function IdlePromptModal({ prompt, onResolved }: Props) {
         allocations: rows
           .filter((r) => r.minuten > 0)
           .map((r) => ({ projektId: r.projektId, minuten: r.minuten })),
-        fortsetzenProjektId: fortsetzenId === '' ? null : fortsetzenId
+        fortsetzenProjektId: fortsetzenId === '' ? null : fortsetzenId,
+        fortsetzenNotiz:
+          fortsetzenId !== '' && fortsetzenId === prompt.previousProjektId
+            ? prompt.previousNotiz
+            : ''
       })
       onResolved()
     } catch (err) {

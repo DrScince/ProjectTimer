@@ -43,7 +43,9 @@ function loadTrayImage(): Electron.NativeImage {
     )
     image = nativeImage.createFromBuffer(fallback)
   }
-  return image.resize({ width: 16, height: 16 })
+  // Windows Tray: 16px; bei hoher DPI etwas größer schärfer
+  const size = Math.round(16 * (process.platform === 'win32' ? 1.25 : 1))
+  return image.resize({ width: size, height: size, quality: 'best' })
 }
 
 export function showMainWindow(win: BrowserWindow | null): void {

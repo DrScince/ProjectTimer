@@ -10,3 +10,10 @@ out
 .idea
 *.db
 *.db-*
+
+# Design drafts / local mockups
+slideout-mockup-*.jpg
+resources/icon-drafts/
+docs/*.ps1
+docs/*.cjs
+docs/*.mjs

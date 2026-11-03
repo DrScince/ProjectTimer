@@ -20,6 +20,7 @@ type PendingAway = {
   reason: IdleAwayReason
   since: Date
   previousProjektId: number | null
+  previousNotiz: string
 }
 
 type OpenPrompt = IdlePrompt
@@ -104,6 +105,8 @@ function beginAway(reason: IdleAwayReason): void {
 
   const previousProjektId =
     laufend?.projektId ?? openPrompt?.previousProjektId ?? null
+  const previousNotiz =
+    (laufend?.notiz ?? '').trim() || openPrompt?.previousNotiz || ''
   if (laufend) {
     freezeTimerForAway()
   }
@@ -111,7 +114,8 @@ function beginAway(reason: IdleAwayReason): void {
   pending = {
     reason,
     since: new Date(),
-    previousProjektId
+    previousProjektId,
+    previousNotiz
   }
 }
 
@@ -124,11 +128,13 @@ function thresholdFor(reason: IdleAwayReason): number {
   return Math.max(1, getEinstellungen().idleThresholdMinutes || 5)
 }
 
-function resumePreviousOrPause(previousProjektId: number | null): void {
+function resumePreviousOrPause(
+  previousProjektId: number | null,
+  previousNotiz = ''
+): void {
   if (previousProjektId != null) {
     try {
-      const projekt = listProjekte(true).find((p) => p.id === previousProjektId)
-      startTimer(previousProjektId, projekt?.kurztext?.trim() ?? '')
+      startTimer(previousProjektId, previousNotiz)
       return
     } catch {
       // fällt auf Pause zurück
@@ -146,6 +152,7 @@ function mergeOrCreatePrompt(away: PendingAway, ended: Date, dauerMinuten: numbe
       bis: ended.toISOString(),
       dauerMinuten: openPrompt.dauerMinuten + dauerMinuten,
       previousProjektId: openPrompt.previousProjektId ?? away.previousProjektId,
+      previousNotiz: openPrompt.previousNotiz || away.previousNotiz,
       projekte: listPromptProjekte()
     }
   } else {
@@ -156,6 +163,7 @@ function mergeOrCreatePrompt(away: PendingAway, ended: Date, dauerMinuten: numbe
       bis: ended.toISOString(),
       dauerMinuten,
       previousProjektId: away.previousProjektId,
+      previousNotiz: away.previousNotiz,
       projekte: listPromptProjekte()
     }
   }
@@ -176,7 +184,7 @@ function finishAway(): void {
   if (dauerMinuten < minRequired) {
     // Kurze Sperre/Idle: bei offener Abfrage nichts ändern
     if (!openPrompt) {
-      resumePreviousOrPause(away.previousProjektId)
+      resumePreviousOrPause(away.previousProjektId, away.previousNotiz)
     }
     return
   }
@@ -199,7 +207,8 @@ export function resolveOpenIdlePrompt(input: IdleResolveInput): void {
   openPrompt = null
   resolveIdleGap(prompt.von, prompt.bis, prompt.dauerMinuten, {
     allocations: input.allocations,
-    fortsetzenProjektId: input.fortsetzenProjektId
+    fortsetzenProjektId: input.fortsetzenProjektId,
+    fortsetzenNotiz: input.fortsetzenNotiz ?? prompt.previousNotiz
   })
   restoreWindowAfterPrompt()
 }

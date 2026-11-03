@@ -104,11 +104,14 @@ const cols = JSON.parse(settings.csvSpalten)
 const delim = settings.csvTrennzeichen
 const header = cols.join(delim)
 const csvRows = abgeschlossen.map((b) => {
-  const stunden = (b.dauer_minuten / 60).toFixed(2).replace('.', ',')
-  const [yy, mm, dd] = b.datum.split('-')
+  const total = Math.max(0, Math.round(Number(b.dauer_minuten) || 0))
+  const hh = String(Math.floor(total / 60)).padStart(2, '0')
+  const mm = String(total % 60).padStart(2, '0')
+  const stunden = `${hh}:${mm}:00`
+  const [yy, mo, dd] = b.datum.split('-')
   const record = {
     personalnummer: settings.personalnummer,
-    datum: `${dd}.${mm}.${yy}`,
+    datum: `${dd}.${mo}.${yy}`,
     stunden,
     projektKuerzel: b.kuerzel,
     empfaengerArt: b.empfaenger_art,
@@ -122,7 +125,7 @@ const csv = `\uFEFF${[header, ...csvRows].join('\r\n')}`
 const csvPath = join(dir, 'export.csv')
 writeFileSync(csvPath, csv, 'utf-8')
 const content = readFileSync(csvPath, 'utf-8')
-if (!content.includes('4711') || !content.includes('1,50') || !content.includes('DEMO')) {
+if (!content.includes('4711') || !content.includes(':00') || !content.includes('DEMO')) {
   throw new Error('CSV-Inhalt unerwartet:\n' + content)
 }
 

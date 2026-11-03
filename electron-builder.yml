@@ -13,11 +13,21 @@ extraResources:
   - from: resources
     to: .
     filter:
-      - '**/*'
+      - 'tray.png'
+      - 'icon.png'
+      - 'icon.ico'
+publish:
+  provider: github
+  owner: DrScince
+  repo: ProjectTimer
 win:
   target:
     - nsis
-  icon: resources/tray.png
+    - portable
+  icon: resources/icon.ico
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-Setup-${version}.${ext}
+portable:
+  artifactName: ${productName}-Portable-${version}.${ext}
