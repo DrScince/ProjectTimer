@@ -27,7 +27,26 @@ jobs:
       - name: Rebuild native modules
         run: npx electron-rebuild -f -w better-sqlite3
 
-      - name: Build and publish
+      - name: Build installer and portable
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run release
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist
+
+      - name: List dist output
+        run: Get-ChildItem -Recurse dist | Select-Object FullName, Length
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ProjectTimer ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          files: |
+            dist/ProjectTimer-Setup-*.exe
+            dist/ProjectTimer-Portable-*.exe
+            dist/latest.yml
+            dist/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
