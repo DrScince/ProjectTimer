@@ -16,7 +16,7 @@ export const de = {
   'stempel.newOrder': 'Neuer Auftrag',
   'stempel.toAdmin': 'Zur Verwaltung',
   'stempel.personalMissing':
-    'Personalnummer fehlt – bitte unter Einstellungen hinterlegen (nötig für SAP).',
+    'Personalnummer ist noch leer – optional unter Einstellungen hinterlegen (hilfreich für SAP-Export).',
   'stempel.personalLabel': 'Personalnummer',
   'stempel.timeLabel': 'Stempelzeit',
   'stempel.timeWithBreaks': 'Zeit mit Pausen',
@@ -257,8 +257,8 @@ export const de = {
   'settings.title': 'Einstellungen',
   'settings.subtitle': 'Persönliche Daten und CSV-Export konfigurieren.',
   'settings.displayName': 'Anzeigename',
-  'settings.personalNo': 'Personalnummer (SAP) *',
-  'settings.personalPh': 'Wird in jede CSV-Zeile übernommen',
+  'settings.personalNo': 'Personalnummer (SAP)',
+  'settings.personalPh': 'Optional – wird in den Export übernommen',
   'settings.csvSep': 'CSV-Trennzeichen',
   'settings.sepSemicolon': 'Semikolon (;)',
   'settings.sepComma': 'Komma (,)',
@@ -300,7 +300,7 @@ export const de = {
   'settings.exportCols': 'Exportspalten',
   'settings.save': 'Speichern',
   'settings.saved': 'Einstellungen gespeichert.',
-  'settings.errPersonal': 'Personalnummer ist für die SAP-Eintragung Pflicht.',
+  'settings.errPersonal': 'Personalnummer konnte nicht gespeichert werden.',
   'settings.errColumns': 'Mindestens eine Exportspalte muss aktiv sein.',
   'settings.errSave': 'Speichern fehlgeschlagen.',
 

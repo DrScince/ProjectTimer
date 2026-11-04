@@ -553,9 +553,7 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
 
       {error && <p className="error">{error}</p>}
       {!personalnummer.trim() && (
-        <p className="error">
-          {t('stempel.personalMissing')}
-        </p>
+        <p className="muted">{t('stempel.personalMissing')}</p>
       )}
       <p className="muted">{t('stempel.personalLabel')}: {personalnummer.trim() || '–'}</p>
       {sapMessage && <p className="success">{sapMessage}</p>}

@@ -18,7 +18,7 @@ export const en: Record<MessageKey, string> = {
   'stempel.newOrder': 'New order',
   'stempel.toAdmin': 'Manage projects',
   'stempel.personalMissing':
-    'Personnel number missing – please set it under Settings (required for SAP).',
+    'Personnel number is empty – optional under Settings (useful for SAP export).',
   'stempel.personalLabel': 'Personnel number',
   'stempel.timeLabel': 'Clocked time',
   'stempel.timeWithBreaks': 'Time including breaks',
@@ -259,8 +259,8 @@ export const en: Record<MessageKey, string> = {
   'settings.title': 'Settings',
   'settings.subtitle': 'Configure personal data and CSV export.',
   'settings.displayName': 'Display name',
-  'settings.personalNo': 'Personnel number (SAP) *',
-  'settings.personalPh': 'Included in every CSV row',
+  'settings.personalNo': 'Personnel number (SAP)',
+  'settings.personalPh': 'Optional – included in exports',
   'settings.csvSep': 'CSV separator',
   'settings.sepSemicolon': 'Semicolon (;)',
   'settings.sepComma': 'Comma (,)',
@@ -302,7 +302,7 @@ export const en: Record<MessageKey, string> = {
   'settings.exportCols': 'Export columns',
   'settings.save': 'Save',
   'settings.saved': 'Settings saved.',
-  'settings.errPersonal': 'Personnel number is required for SAP export.',
+  'settings.errPersonal': 'Personnel number could not be saved.',
   'settings.errColumns': 'At least one export column must be active.',
   'settings.errSave': 'Save failed.',
 

@@ -52,10 +52,6 @@ export default function SettingsPage() {
     setError('')
     setMessage('')
 
-    if (!settings.personalnummer.trim()) {
-      setError(t('settings.errPersonal'))
-      return
-    }
     if (settings.csvSpalten.length === 0) {
       setError(t('settings.errColumns'))
       return
@@ -100,7 +96,6 @@ export default function SettingsPage() {
               onChange={(e) =>
                 setSettings((prev) => ({ ...prev, personalnummer: e.target.value }))
               }
-              required
               placeholder={t('settings.personalPh')}
             />
           </div>

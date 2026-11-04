@@ -3,6 +3,7 @@ productName: ProjectTimer
 directories:
   buildResources: build
   output: dist
+afterPack: scripts/afterPack.cjs
 files:
   - '!**/.vscode/*'
   - '!src/*'
@@ -27,11 +28,14 @@ win:
     - nsis
     - portable
   icon: resources/icon.ico
-  # Ohne Code-Signing: winCodeSign-Extrakt braucht Symlink-Rechte und bricht lokale Builds ab
+  # winCodeSign-Extrakt braucht lokal Symlink-Rechte; Icon setzen wir per afterPack/rcedit
   signAndEditExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  installerHeaderIcon: resources/icon.ico
   artifactName: ${productName}-Setup-${version}.${ext}
 portable:
   artifactName: ${productName}-Portable-${version}.${ext}

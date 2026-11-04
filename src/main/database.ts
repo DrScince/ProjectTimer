@@ -602,11 +602,6 @@ export function createBuchung(input: ZeitbuchungInput): ZeitbuchungMitProjekt {
   if (!projekt?.auftragsnummer || !projekt.arbeitsplatz) {
     throw new Error(t('err.orderNeedsFields'))
   }
-  const settings = getEinstellungen()
-  if (!settings.personalnummer.trim()) {
-    throw new Error(t('err.personalRequired'))
-  }
-
   const dauer = berechneDauerMinuten(input.startZeit, input.endeZeit, input.dauerMinuten)
   const notiz = input.notiz?.trim() ?? ''
   if (notiz) {
@@ -1297,11 +1292,6 @@ export function startTimer(projektId: number, notiz = ''): ZeitbuchungMitProjekt
   const projekt = getProjekt(projektId)
   if (!projekt?.auftragsnummer || !projekt.arbeitsplatz) {
     throw new Error(t('err.orderNeedsFields'))
-  }
-
-  const settings = getEinstellungen()
-  if (!settings.personalnummer.trim()) {
-    throw new Error(t('err.personalRequired'))
   }
 
   // Pause (Zeit ohne Auftrag) beenden, sobald wieder auf einen Auftrag gebucht wird
