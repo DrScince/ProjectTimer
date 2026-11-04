@@ -4,7 +4,7 @@
 
 ![Erfassung](docs/screenshots/01-erfassung.png)
 
-Lizenz: [MIT](LICENSE) · Version: **1.0.0** · Platform: **Windows**
+Lizenz: [MIT](LICENSE) · Version: **1.0.1** · Platform: **Windows**
 
 ---
 
@@ -91,8 +91,8 @@ Typischer Tagesablauf:
 
 | Variante | Datei | Updates |
 | --- | --- | --- |
-| **Installer (NSIS)** | `ProjectTimer-Setup-1.0.0.exe` | Auto-Download + „Jetzt installieren“ |
-| **Portable** | `ProjectTimer-Portable-1.0.0.exe` | Hinweis + Download; Datei manuell ersetzen |
+| **Installer (NSIS)** | `ProjectTimer-Setup-*.exe` | Auto-Download + „Jetzt installieren“ |
+| **Portable** | `ProjectTimer-Portable-*.exe` | Hinweis + Download; Datei manuell ersetzen |
 
 ---
 
@@ -134,7 +134,7 @@ Personalnummer, Sprache, Leiste, Idle-Erkennung, Autostart.
 
 ### Option A – Installer (empfohlen bei Auto-Update)
 
-1. Im [GitHub Release v1.0.0](https://github.com/DrScince/ProjectTimer/releases/tag/v1.0.0) die Datei **`ProjectTimer-Setup-1.0.0.exe`** laden.
+1. Im [GitHub Release](https://github.com/DrScince/ProjectTimer/releases/latest) die Datei **`ProjectTimer-Setup-*.exe`** laden.
 2. Ausführen und Installationsordner wählen.
 3. ProjectTimer starten (optional Autostart in den Einstellungen aktivieren).
 
@@ -142,7 +142,7 @@ Windows SmartScreen kann ohne Code-Signing warnen: *Weitere Informationen* → *
 
 ### Option B – Portable (ohne Installation)
 
-1. **`ProjectTimer-Portable-1.0.0.exe`** laden.
+1. **`ProjectTimer-Portable-*.exe`** laden.
 2. An beliebigen Ort legen und starten.
 3. Updates: In-App-Hinweis → **Herunterladen** → alte Datei durch neue ersetzen.  
    Einstellungen und Zeiten bleiben in `%AppData%\ProjectTimer\` erhalten.
@@ -257,15 +257,15 @@ Erzeugt u. a.:
 - `dist/ProjectTimer-Setup-<version>.exe`
 - `dist/ProjectTimer-Portable-<version>.exe`
 
-### Version 1.0.0 veröffentlichen
+### Version veröffentlichen
 
-1. Version in `package.json` setzen (`1.0.0`).
+1. Version in `package.json` anheben (z. B. `1.0.1`).
 2. Auf `main` committen und pushen.
 3. Tag setzen:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 Der Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) baut auf `windows-latest` und veröffentlicht das Release inkl. Update-Metadaten für den Installer.
