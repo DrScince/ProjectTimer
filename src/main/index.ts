@@ -533,6 +533,15 @@ app.whenReady().then(() => {
   initDatabase()
   applyAppLocale()
   registerIpc()
+
+  // Pack-Smoke: Main inkl. exceljs-Kette erfolgreich geladen → sauber beenden
+  if (process.argv.includes('--pack-smoke')) {
+    console.log('[pack-smoke] main ready')
+    setQuitting(true)
+    app.exit(0)
+    return
+  }
+
   createWindow()
   createTray(() => mainWindow)
   updateTrayMenu()

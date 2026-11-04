@@ -27,6 +27,8 @@ win:
     - nsis
     - portable
   icon: resources/icon.ico
+  # Ohne Code-Signing: winCodeSign-Extrakt braucht Symlink-Rechte und bricht lokale Builds ab
+  signAndEditExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

@@ -4,8 +4,14 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    // exceljs/pdfkit bundlen: sonst fehlen nested Deps (z. B. call-bind-apply-helpers) im ASAR
-    plugins: [externalizeDepsPlugin({ exclude: ['exceljs', 'pdfkit'] })]
+    plugins: [
+      externalizeDepsPlugin({
+        // Default: alle package.json-Dependencies werden externalisiert.
+        // Pure-JS-Deps (exceljs-Kette) MÜSSEN gebündelt werden – sonst
+        // crasht der Installer mit "Cannot find module 'call-bind-apply-helpers'".
+        exclude: ['exceljs', 'pdfkit', 'call-bind-apply-helpers']
+      })
+    ]
   },
   preload: {
     plugins: [externalizeDepsPlugin()]
