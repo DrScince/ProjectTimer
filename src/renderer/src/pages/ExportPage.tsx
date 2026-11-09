@@ -144,6 +144,8 @@ export default function ExportPage() {
                   <th>{t('export.colPersonal')}</th>
                   <th>{t('export.colDate')}</th>
                   <th>{t('export.colHours')}</th>
+                  <th>{t('export.colBooked')}</th>
+                  <th>{t('export.colUnbooked')}</th>
                   <th>{t('export.colOrder')}</th>
                   <th>{t('export.colWorkplace')}</th>
                   <th>{t('export.colProject')}</th>
@@ -161,6 +163,8 @@ export default function ExportPage() {
                       <td>{row.personalnummer || '–'}</td>
                       <td>{row.datum}</td>
                       <td>{row.stunden}</td>
+                      <td>{row.stundenVerbucht}</td>
+                      <td>{row.stundenUnverbucht}</td>
                       <td>{row.auftragsnummer || '–'}</td>
                       <td>{row.arbeitsplatz || '–'}</td>
                       <td>{row.projektKuerzel}</td>

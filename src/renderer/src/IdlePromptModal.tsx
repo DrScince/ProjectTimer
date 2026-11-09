@@ -220,31 +220,90 @@ export default function IdlePromptModal({ prompt, onResolved }: Props) {
                 : Math.max(0, prompt.dauerMinuten - othersProjects)
             const canMinus = row.minuten > 0
             const canPlus = row.minuten < maxForRow
+            const canMinus5 = row.minuten >= 5
+            const canPlus5 = row.minuten + 5 <= maxForRow
+            const canMinus15 = row.minuten >= 15
+            const canPlus15 = row.minuten + 15 <= maxForRow
             return (
               <div key={row.key} className="idle-row">
                 <span className="idle-row-label">{row.label}</span>
-                <div className="idle-stepper" role="group" aria-label={row.label}>
-                  <button
-                    type="button"
-                    className="idle-step-btn minus"
-                    disabled={!canMinus}
-                    aria-label="−"
-                    title={!canMinus ? t('idle.minReached') : undefined}
-                    onClick={() => adjustMinuten(row.key, -1)}
-                  >
-                    −
-                  </button>
-                  <span className="idle-step-value">{row.minuten}</span>
-                  <button
-                    type="button"
-                    className="idle-step-btn plus"
-                    disabled={!canPlus}
-                    aria-label="+"
-                    title={!canPlus ? t('idle.maxReached') : undefined}
-                    onClick={() => adjustMinuten(row.key, 1)}
-                  >
-                    +
-                  </button>
+                <div className="idle-controls">
+                  <div className="idle-stepper" role="group" aria-label={row.label}>
+                    <button
+                      type="button"
+                      className="idle-step-btn minus"
+                      disabled={!canMinus}
+                      aria-label="−1"
+                      title={!canMinus ? t('idle.minReached') : '−1'}
+                      onClick={() => adjustMinuten(row.key, -1)}
+                    >
+                      −
+                    </button>
+                    <input
+                      className="idle-step-input"
+                      type="number"
+                      min={0}
+                      max={maxForRow}
+                      step={1}
+                      value={row.minuten}
+                      aria-label={row.label}
+                      onChange={(e) => setMinuten(row.key, Number(e.target.value))}
+                      onFocus={(e) => e.target.select()}
+                    />
+                    <button
+                      type="button"
+                      className="idle-step-btn plus"
+                      disabled={!canPlus}
+                      aria-label="+1"
+                      title={!canPlus ? t('idle.maxReached') : '+1'}
+                      onClick={() => adjustMinuten(row.key, 1)}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="idle-step-jumps">
+                    <button
+                      type="button"
+                      className="btn btn-small idle-jump"
+                      disabled={!canMinus15}
+                      onClick={() => adjustMinuten(row.key, -15)}
+                    >
+                      −15
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small idle-jump"
+                      disabled={!canMinus5}
+                      onClick={() => adjustMinuten(row.key, -5)}
+                    >
+                      −5
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small idle-jump"
+                      disabled={!canPlus5}
+                      onClick={() => adjustMinuten(row.key, 5)}
+                    >
+                      +5
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small idle-jump"
+                      disabled={!canPlus15}
+                      onClick={() => adjustMinuten(row.key, 15)}
+                    >
+                      +15
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small idle-jump"
+                      disabled={!canPlus}
+                      title={t('idle.fillRestHint')}
+                      onClick={() => setMinuten(row.key, prompt.dauerMinuten)}
+                    >
+                      {t('idle.fillRest')}
+                    </button>
+                  </div>
                 </div>
                 <span className="muted idle-row-unit">{t('idle.min')}</span>
               </div>

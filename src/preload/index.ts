@@ -13,6 +13,8 @@ import type {
   TagesThema,
   TopicVerteilung,
   WochenUebersicht,
+  BuchungAdjustInput,
+  VerbuchungsVorschlag,
   ZeitbuchungInput,
   ZeitbuchungMitProjekt,
   CsvVorschauZeile,
@@ -44,11 +46,21 @@ const api = {
   },
   anwesenheit: {
     get: (): Promise<Anwesenheit | null> => ipcRenderer.invoke('anwesenheit:get'),
+    getByDatum: (datum: string): Promise<Anwesenheit | null> =>
+      ipcRenderer.invoke('anwesenheit:getByDatum', datum),
     listMinutenByRange: (von: string, bis: string): Promise<AnwesenheitTagSumme[]> =>
       ipcRenderer.invoke('anwesenheit:listMinutenByRange', von, bis),
+    upsertForDatum: (
+      datum: string,
+      input: { kommenZeit: string; gehenZeit: string | null; pausenMinuten: number }
+    ): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:upsertForDatum', datum, input),
     kommen: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:kommen'),
     gehen: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:gehen'),
-    pauseToggle: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:pauseToggle')
+    pauseToggle: (): Promise<Anwesenheit> => ipcRenderer.invoke('anwesenheit:pauseToggle'),
+    allocatePause: (
+      datum: string,
+      allocations: Array<{ projektId: number; minuten: number; notiz?: string }>
+    ): Promise<number> => ipcRenderer.invoke('anwesenheit:allocatePause', datum, allocations)
   },
   buchungen: {
     listByDatum: (datum: string): Promise<ZeitbuchungMitProjekt[]> =>
@@ -59,6 +71,8 @@ const api = {
       ipcRenderer.invoke('buchungen:create', input),
     update: (id: number, input: ZeitbuchungInput): Promise<ZeitbuchungMitProjekt> =>
       ipcRenderer.invoke('buchungen:update', id, input),
+    adjust: (id: number, input: BuchungAdjustInput): Promise<ZeitbuchungMitProjekt | null> =>
+      ipcRenderer.invoke('buchungen:adjust', id, input),
     delete: (id: number): Promise<boolean> => ipcRenderer.invoke('buchungen:delete', id),
     sapStatus: (datum: string): Promise<SapTagesStatus> =>
       ipcRenderer.invoke('buchungen:sapStatus', datum),
@@ -83,7 +97,14 @@ const api = {
       projektId: number,
       kurztext: string
     ): Promise<number> =>
-      ipcRenderer.invoke('buchungen:clearSapDatumProjektNotiz', datum, projektId, kurztext)
+      ipcRenderer.invoke('buchungen:clearSapDatumProjektNotiz', datum, projektId, kurztext),
+    verbuchungsVorschlag: (
+      projektId: number,
+      datum?: string | null
+    ): Promise<VerbuchungsVorschlag> =>
+      ipcRenderer.invoke('buchungen:verbuchungsVorschlag', projektId, datum ?? null),
+    applyVerbuchung: (projektId: number, datum?: string | null): Promise<number> =>
+      ipcRenderer.invoke('buchungen:applyVerbuchung', projektId, datum ?? null)
   },
   themen: {
     create: (projektId: number, kurztext: string): Promise<TagesThema> =>

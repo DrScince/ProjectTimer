@@ -9,9 +9,13 @@ import {
   deleteBuchung,
   deleteProjekt,
   deleteTagesThema,
+  allocatePauseToProjekte,
+  adjustBuchungNachtraeglich,
   gehen,
   getAnwesenheit,
+  getAnwesenheitByDatum,
   listAnwesenheitMinutenByRange,
+  upsertAnwesenheitForDatum,
   getEinstellungen,
   getLaufenderTimer,
   initDatabase,
@@ -39,6 +43,8 @@ import {
   clearSapByDatumProjekt,
   markSapByDatumProjektNotiz,
   clearSapByDatumProjektNotiz,
+  getVerbuchungsVorschlag,
+  applyVerbuchung,
   redistributeOhneKurztext,
   moveProjekt,
   reorderProjekte
@@ -227,8 +233,23 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('anwesenheit:get', () => getAnwesenheit())
+  ipcMain.handle('anwesenheit:getByDatum', (_e, datum: string) =>
+    getAnwesenheitByDatum(String(datum ?? ''))
+  )
   ipcMain.handle('anwesenheit:listMinutenByRange', (_e, von: string, bis: string) =>
     listAnwesenheitMinutenByRange(String(von ?? ''), String(bis ?? ''))
+  )
+  ipcMain.handle(
+    'anwesenheit:upsertForDatum',
+    (
+      _e,
+      datum: string,
+      input: { kommenZeit: string; gehenZeit: string | null; pausenMinuten: number }
+    ) => {
+      const result = upsertAnwesenheitForDatum(String(datum ?? ''), input)
+      broadcastStatusChanged()
+      return result
+    }
   )
   ipcMain.handle('anwesenheit:kommen', () => {
     const result = kommen()
@@ -245,6 +266,18 @@ function registerIpc(): void {
     broadcastStatusChanged()
     return result
   })
+  ipcMain.handle(
+    'anwesenheit:allocatePause',
+    (
+      _e,
+      datum: string,
+      allocations: Array<{ projektId: number; minuten: number; notiz?: string }>
+    ) => {
+      const moved = allocatePauseToProjekte(String(datum ?? ''), allocations ?? [])
+      broadcastStatusChanged()
+      return moved
+    }
+  )
 
   ipcMain.handle('projekte:export', async () => {
     const projekte = listProjekte(false)
@@ -260,6 +293,7 @@ function registerIpc(): void {
         empfaengerArt: p.empfaengerArt,
         empfaenger: p.empfaenger,
         leistungsart: p.leistungsart,
+        verbuchungsProzent: p.verbuchungsProzent,
         aktiv: p.aktiv
       }))
     }
@@ -305,6 +339,7 @@ function registerIpc(): void {
         empfaengerArt: p.empfaengerArt,
         empfaenger: p.empfaenger ?? '',
         leistungsart: p.leistungsart ?? '',
+        verbuchungsProzent: p.verbuchungsProzent ?? 100,
         aktiv: p.aktiv !== false
       }))
     )
@@ -319,6 +354,19 @@ function registerIpc(): void {
   ipcMain.handle('buchungen:create', (_e, input: ZeitbuchungInput) => createBuchung(input))
   ipcMain.handle('buchungen:update', (_e, id: number, input: ZeitbuchungInput) =>
     updateBuchung(id, input)
+  )
+  ipcMain.handle(
+    'buchungen:adjust',
+    (
+      _e,
+      id: number,
+      input: {
+        projektId: number
+        notiz?: string
+        behaltenMinuten: number
+        ausPauseMinuten?: number
+      }
+    ) => adjustBuchungNachtraeglich(Number(id), input ?? { projektId: 0, behaltenMinuten: 0 })
   )
   ipcMain.handle('buchungen:delete', (_e, id: number) => {
     deleteBuchung(id)
@@ -347,6 +395,22 @@ function registerIpc(): void {
     (_e, datum: string, projektId: number, kurztext: string) =>
       clearSapByDatumProjektNotiz(datum, projektId, kurztext ?? '')
   )
+  ipcMain.handle(
+    'buchungen:verbuchungsVorschlag',
+    (_e, projektId: number, datum?: string | null) =>
+      getVerbuchungsVorschlag(
+        Number(projektId),
+        datum == null || datum === '' ? null : String(datum)
+      )
+  )
+  ipcMain.handle('buchungen:applyVerbuchung', (_e, projektId: number, datum?: string | null) => {
+    const count = applyVerbuchung(
+      Number(projektId),
+      datum == null || datum === '' ? null : String(datum)
+    )
+    broadcastStatusChanged()
+    return count
+  })
 
   ipcMain.handle('timer:get', () => getLaufenderTimer())
   ipcMain.handle('timer:start', (_e, projektId: number, notiz?: string) => {

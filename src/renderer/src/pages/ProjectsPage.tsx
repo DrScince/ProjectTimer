@@ -11,6 +11,7 @@ const EMPTY: ProjektInput = {
   empfaengerArt: 'Innenauftrag',
   empfaenger: '',
   leistungsart: '',
+  verbuchungsProzent: 100,
   aktiv: true
 }
 
@@ -47,6 +48,7 @@ export default function ProjectsPage() {
       empfaengerArt: projekt.empfaengerArt,
       empfaenger: projekt.empfaenger,
       leistungsart: projekt.leistungsart,
+      verbuchungsProzent: projekt.verbuchungsProzent ?? 100,
       aktiv: projekt.aktiv
     })
   }
@@ -218,6 +220,24 @@ export default function ProjectsPage() {
             />
           </div>
           <div className="field">
+            <label htmlFor="proj-verbuchung">{t('projects.bookingPercent')}</label>
+            <input
+              id="proj-verbuchung"
+              type="number"
+              min={1}
+              max={200}
+              step={1}
+              value={form.verbuchungsProzent ?? 100}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  verbuchungsProzent: Number(e.target.value)
+                }))
+              }
+            />
+            <p className="muted field-hint">{t('projects.bookingPercentHint')}</p>
+          </div>
+          <div className="field">
             <label htmlFor="proj-aktiv">{t('projects.status')}</label>
             <select
               id="proj-aktiv"
@@ -257,6 +277,7 @@ export default function ProjectsPage() {
                   <th>{t('projects.colName')}</th>
                   <th>{t('projects.colOrder')}</th>
                   <th>{t('projects.colWorkplace')}</th>
+                  <th>{t('projects.colBookingPercent')}</th>
                   <th>{t('projects.colStatus')}</th>
                   <th></th>
                 </tr>
@@ -292,6 +313,7 @@ export default function ProjectsPage() {
                     <td>{p.name}</td>
                     <td>{p.auftragsnummer || '–'}</td>
                     <td>{p.arbeitsplatz || '–'}</td>
+                    <td>{p.verbuchungsProzent ?? 100} %</td>
                     <td>
                       <span className={`badge ${p.aktiv ? 'active' : 'inactive'}`}>
                         {p.aktiv ? t('projects.active') : t('projects.inactive')}

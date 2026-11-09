@@ -16,6 +16,8 @@ import {
   type SapTransferStatus,
   type TagesThema,
   type TopicVerteilung,
+  type VerbuchungsVorschlag,
+  type VerbuchungsVorschlagZeile,
   type Zeitbuchung,
   type ZeitbuchungInput,
   type ZeitbuchungMitProjekt
@@ -49,6 +51,7 @@ export function initDatabase(): void {
       empfaenger_art TEXT NOT NULL,
       empfaenger TEXT NOT NULL DEFAULT '',
       leistungsart TEXT NOT NULL DEFAULT '',
+      verbuchungs_prozent INTEGER NOT NULL DEFAULT 100,
       aktiv INTEGER NOT NULL DEFAULT 1,
       sort_order INTEGER NOT NULL DEFAULT 0,
       erstellt_am TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -127,6 +130,10 @@ function migrateSchema(): void {
       tx()
       console.log('[ProjectTimer] Migration: Spalte sort_order hinzugefügt')
     }
+    if (!names.has('verbuchungs_prozent')) {
+      database.exec(`ALTER TABLE projekte ADD COLUMN verbuchungs_prozent INTEGER NOT NULL DEFAULT 100`)
+      console.log('[ProjectTimer] Migration: Spalte verbuchungs_prozent hinzugefügt')
+    }
 
     const buchungCols = database
       .prepare('PRAGMA table_info(zeitbuchungen)')
@@ -135,6 +142,20 @@ function migrateSchema(): void {
     if (!buchungNames.has('sap_ueberfuehrt_am')) {
       database.exec(`ALTER TABLE zeitbuchungen ADD COLUMN sap_ueberfuehrt_am TEXT`)
       console.log('[ProjectTimer] Migration: Spalte sap_ueberfuehrt_am hinzugefügt')
+    }
+    if (!buchungNames.has('geloescht_am')) {
+      database.exec(`ALTER TABLE zeitbuchungen ADD COLUMN geloescht_am TEXT`)
+      console.log('[ProjectTimer] Migration: Spalte geloescht_am hinzugefügt')
+    }
+    if (!buchungNames.has('sap_verbucht_minuten')) {
+      database.exec(`ALTER TABLE zeitbuchungen ADD COLUMN sap_verbucht_minuten INTEGER NOT NULL DEFAULT 0`)
+      // Bestehende voll markierte Buchungen als vollständig verbucht übernehmen
+      database.exec(
+        `UPDATE zeitbuchungen
+         SET sap_verbucht_minuten = COALESCE(dauer_minuten, 0)
+         WHERE sap_ueberfuehrt_am IS NOT NULL`
+      )
+      console.log('[ProjectTimer] Migration: Spalte sap_verbucht_minuten hinzugefügt')
     }
 
     const anwCols = database
@@ -188,6 +209,12 @@ function seedEinstellungen(): void {
   tx()
 }
 
+function clampVerbuchungsProzent(value: unknown): number {
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return 100
+  return Math.min(200, Math.max(1, n))
+}
+
 function mapProjekt(row: Record<string, unknown>): Projekt {
   return {
     id: row.id as number,
@@ -199,6 +226,7 @@ function mapProjekt(row: Record<string, unknown>): Projekt {
     empfaengerArt: row.empfaenger_art as EmpfaengerArt,
     empfaenger: row.empfaenger as string,
     leistungsart: row.leistungsart as string,
+    verbuchungsProzent: clampVerbuchungsProzent(row.verbuchungs_prozent ?? 100),
     aktiv: Boolean(row.aktiv),
     sortOrder: Number(row.sort_order ?? 0),
     erstelltAm: row.erstellt_am as string
@@ -206,6 +234,16 @@ function mapProjekt(row: Record<string, unknown>): Projekt {
 }
 
 function mapBuchung(row: Record<string, unknown>): Zeitbuchung {
+  const dauer = Math.max(0, Number(row.dauer_minuten ?? 0) || 0)
+  const rawVerbucht = Number(row.sap_verbucht_minuten ?? 0)
+  let sapVerbuchtMinuten = Number.isFinite(rawVerbucht) ? Math.max(0, rawVerbucht) : 0
+  // Legacy: nur sap_ueberfuehrt_am gesetzt → als voll verbucht behandeln
+  if (sapVerbuchtMinuten <= 0 && row.sap_ueberfuehrt_am) {
+    sapVerbuchtMinuten = dauer
+  }
+  if (dauer > 0) {
+    sapVerbuchtMinuten = Math.min(sapVerbuchtMinuten, dauer)
+  }
   return {
     id: row.id as number,
     projektId: row.projekt_id as number,
@@ -216,8 +254,30 @@ function mapBuchung(row: Record<string, unknown>): Zeitbuchung {
     notiz: row.notiz as string,
     quelle: row.quelle as Zeitbuchung['quelle'],
     erstelltAm: row.erstellt_am as string,
-    sapUeberfuehrtAm: (row.sap_ueberfuehrt_am as string) ?? null
+    sapUeberfuehrtAm: (row.sap_ueberfuehrt_am as string) ?? null,
+    sapVerbuchtMinuten,
+    geloeschtAm: (row.geloescht_am as string) ?? null
   }
+}
+
+function buchungDauerMinuten(b: Zeitbuchung): number {
+  return Math.max(0, b.dauerMinuten ?? 0)
+}
+
+/** Noch nicht verbuchte Minuten einer Buchung. */
+export function sapOffenMinuten(b: Zeitbuchung): number {
+  return Math.max(0, buchungDauerMinuten(b) - (b.sapVerbuchtMinuten ?? 0))
+}
+
+export function istBuchungVollVerbucht(b: Zeitbuchung): boolean {
+  const dauer = buchungDauerMinuten(b)
+  if (dauer <= 0) return Boolean(b.sapUeberfuehrtAm)
+  return (b.sapVerbuchtMinuten ?? 0) >= dauer
+}
+
+export function istBuchungTeilweiseVerbucht(b: Zeitbuchung): boolean {
+  const v = b.sapVerbuchtMinuten ?? 0
+  return v > 0 && !istBuchungVollVerbucht(b)
 }
 
 function mapBuchungMitProjekt(row: Record<string, unknown>): ZeitbuchungMitProjekt {
@@ -278,8 +338,9 @@ export function createProjekt(input: ProjektInput): Projekt {
   const result = getDb()
     .prepare(
       `INSERT INTO projekte
-        (name, kuerzel, auftragsnummer, arbeitsplatz, kurztext, empfaenger_art, empfaenger, leistungsart, aktiv, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (name, kuerzel, auftragsnummer, arbeitsplatz, kurztext, empfaenger_art, empfaenger, leistungsart,
+         verbuchungs_prozent, aktiv, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.name.trim(),
@@ -290,6 +351,7 @@ export function createProjekt(input: ProjektInput): Projekt {
       input.empfaengerArt,
       input.empfaenger.trim(),
       input.leistungsart.trim(),
+      clampVerbuchungsProzent(input.verbuchungsProzent ?? 100),
       input.aktiv === false ? 0 : 1,
       nextSortOrder()
     )
@@ -335,7 +397,7 @@ export function updateProjekt(id: number, input: ProjektInput): Projekt {
     .prepare(
       `UPDATE projekte
        SET name = ?, kuerzel = ?, auftragsnummer = ?, arbeitsplatz = ?, kurztext = ?,
-           empfaenger_art = ?, empfaenger = ?, leistungsart = ?, aktiv = ?
+           empfaenger_art = ?, empfaenger = ?, leistungsart = ?, verbuchungs_prozent = ?, aktiv = ?
        WHERE id = ?`
     )
     .run(
@@ -347,6 +409,7 @@ export function updateProjekt(id: number, input: ProjektInput): Projekt {
       input.empfaengerArt,
       input.empfaenger.trim(),
       input.leistungsart.trim(),
+      clampVerbuchungsProzent(input.verbuchungsProzent ?? 100),
       input.aktiv === false ? 0 : 1,
       id
     )
@@ -420,7 +483,12 @@ export function listBuchungenByRange(von: string, bis: string): ZeitbuchungMitPr
     .map((row) => mapBuchungMitProjekt(row as Record<string, unknown>))
 }
 
+export function istBuchungAktiv(buchung: Zeitbuchung): boolean {
+  return !buchung.geloeschtAm
+}
+
 export function istBuchungAbgeschlossen(buchung: Zeitbuchung): boolean {
+  if (!istBuchungAktiv(buchung)) return false
   if (buchung.endeZeit != null) return true
   if (buchung.quelle === 'manuell' && buchung.dauerMinuten != null && buchung.dauerMinuten > 0) {
     return true
@@ -434,13 +502,23 @@ export function markBuchungenSapUeberfuehrt(
 ): number {
   if (ids.length === 0) return 0
   const database = getDb()
+  const getDauer = database.prepare(
+    `SELECT dauer_minuten, sap_verbucht_minuten FROM zeitbuchungen WHERE id = ?`
+  )
   const stmt = database.prepare(
-    `UPDATE zeitbuchungen SET sap_ueberfuehrt_am = ? WHERE id = ? AND sap_ueberfuehrt_am IS NULL`
+    `UPDATE zeitbuchungen
+     SET sap_ueberfuehrt_am = ?, sap_verbucht_minuten = ?
+     WHERE id = ?`
   )
   const tx = database.transaction(() => {
     let count = 0
     for (const id of ids) {
-      const result = stmt.run(am, id)
+      const row = getDauer.get(id) as
+        | { dauer_minuten: number | null; sap_verbucht_minuten: number | null }
+        | undefined
+      if (!row) continue
+      const dauer = Math.max(0, Number(row.dauer_minuten ?? 0) || 0)
+      const result = stmt.run(am, dauer, id)
       count += result.changes
     }
     return count
@@ -452,7 +530,7 @@ export function clearBuchungenSapUeberfuehrt(ids: number[]): number {
   if (ids.length === 0) return 0
   const database = getDb()
   const stmt = database.prepare(
-    `UPDATE zeitbuchungen SET sap_ueberfuehrt_am = NULL WHERE id = ?`
+    `UPDATE zeitbuchungen SET sap_ueberfuehrt_am = NULL, sap_verbucht_minuten = 0 WHERE id = ?`
   )
   const tx = database.transaction(() => {
     let count = 0
@@ -471,15 +549,17 @@ function sapStatusFromBuchungen(
   if (buchungen.length === 0) {
     return { status: 'leer', zuletztUeberfuehrtAm: null }
   }
-  const transferred = buchungen.filter((b) => Boolean(b.sapUeberfuehrtAm))
-  if (transferred.length === 0) {
-    return { status: 'offen', zuletztUeberfuehrtAm: null }
-  }
-  const times = transferred
-    .map((b) => b.sapUeberfuehrtAm as string)
+  const voll = buchungen.filter((b) => istBuchungVollVerbucht(b))
+  const teilweise = buchungen.filter((b) => istBuchungTeilweiseVerbucht(b))
+  const times = buchungen
+    .map((b) => b.sapUeberfuehrtAm)
+    .filter((x): x is string => Boolean(x))
     .sort()
   const zuletzt = times[times.length - 1] ?? null
-  if (transferred.length === buchungen.length) {
+  if (voll.length === 0 && teilweise.length === 0) {
+    return { status: 'offen', zuletztUeberfuehrtAm: null }
+  }
+  if (voll.length === buchungen.length) {
     return { status: 'ueberfuehrt', zuletztUeberfuehrtAm: zuletzt }
   }
   return { status: 'gemischt', zuletztUeberfuehrtAm: zuletzt }
@@ -487,8 +567,8 @@ function sapStatusFromBuchungen(
 
 export function getSapTagesStatus(datum: string): SapTagesStatus {
   const buchungen = listBuchungenByDatum(datum).filter(istBuchungAbgeschlossen)
-  const offen = buchungen.filter((b) => !b.sapUeberfuehrtAm).length
-  const ueberfuehrt = buchungen.length - offen
+  const offen = buchungen.filter((b) => sapOffenMinuten(b) > 0).length
+  const ueberfuehrt = buchungen.filter((b) => istBuchungVollVerbucht(b)).length
   const { status, zuletztUeberfuehrtAm } = sapStatusFromBuchungen(buchungen)
   return {
     datum,
@@ -502,14 +582,156 @@ export function getSapTagesStatus(datum: string): SapTagesStatus {
 
 export function markSapByDatum(datum: string): number {
   const ids = listBuchungenByDatum(datum)
-    .filter((b) => istBuchungAbgeschlossen(b) && !b.sapUeberfuehrtAm)
+    .filter((b) => istBuchungAbgeschlossen(b) && sapOffenMinuten(b) > 0)
     .map((b) => b.id)
   return markBuchungenSapUeberfuehrt(ids)
 }
 
+/** Verteilt Soll-Minuten chronologisch auf Buchungen; Teilbuchungen erlaubt. */
+function selectTeilverbuchungBisSoll(
+  buchungen: ZeitbuchungMitProjekt[],
+  sollMinuten: number
+): { allocations: Array<{ buchungId: number; minuten: number }>; markierbarMinuten: number } {
+  const sorted = [...buchungen].sort((a, b) => {
+    const as = a.startZeit ?? '99:99'
+    const bs = b.startZeit ?? '99:99'
+    if (as !== bs) return as.localeCompare(bs)
+    return a.id - b.id
+  })
+  const allocations: Array<{ buchungId: number; minuten: number }> = []
+  let rest = Math.max(0, Math.round(sollMinuten))
+  for (const b of sorted) {
+    if (rest <= 0) break
+    const offen = sapOffenMinuten(b)
+    if (offen <= 0) continue
+    const take = Math.min(offen, rest)
+    if (take <= 0) continue
+    allocations.push({ buchungId: b.id, minuten: take })
+    rest -= take
+  }
+  const markierbarMinuten = allocations.reduce((sum, a) => sum + a.minuten, 0)
+  return { allocations, markierbarMinuten }
+}
+
+function listUnverbuchteBuchungenFuerProjekt(
+  projektId: number,
+  datum: string | null
+): ZeitbuchungMitProjekt[] {
+  const rows =
+    datum && datum.trim()
+      ? listBuchungenByDatum(datum.trim()).filter((b) => b.projektId === projektId)
+      : (getDb()
+          .prepare(
+            `${BUCHUNG_SELECT}
+             WHERE z.projekt_id = ?
+               AND z.geloescht_am IS NULL
+               AND (
+                 z.ende_zeit IS NOT NULL
+                 OR (z.quelle = 'manuell' AND z.dauer_minuten IS NOT NULL AND z.dauer_minuten > 0)
+               )
+             ORDER BY z.datum, COALESCE(z.start_zeit, '99:99'), z.id`
+          )
+          .all(projektId) as Record<string, unknown>[]).map(mapBuchungMitProjekt)
+
+  return rows.filter((b) => istBuchungAbgeschlossen(b) && sapOffenMinuten(b) > 0)
+}
+
+/**
+ * Vorschlag: unverbuchte Zeit × Verbuchungs-% je Tag+Kurztext.
+ * Teilbuchungen: Eintragen = Wird markiert.
+ */
+export function getVerbuchungsVorschlag(
+  projektId: number,
+  datum: string | null = null
+): VerbuchungsVorschlag {
+  const projekt = getProjekt(projektId)
+  if (!projekt) {
+    throw new Error(t('err.projectNotFound'))
+  }
+  const prozent = clampVerbuchungsProzent(projekt.verbuchungsProzent)
+  const scope = datum && String(datum).trim() ? String(datum).trim() : null
+  const offen = listUnverbuchteBuchungenFuerProjekt(projektId, scope)
+
+  const byDayTopic = new Map<string, ZeitbuchungMitProjekt[]>()
+  for (const b of offen) {
+    const key = `${b.datum}::${(b.notiz ?? '').trim()}`
+    const list = byDayTopic.get(key) ?? []
+    list.push(b)
+    byDayTopic.set(key, list)
+  }
+
+  const zeilen: VerbuchungsVorschlagZeile[] = Array.from(byDayTopic.entries())
+    .map(([key, items]) => {
+      const sep = key.indexOf('::')
+      const tag = key.slice(0, sep)
+      const kurztext = key.slice(sep + 2)
+      const unverbuchtMinuten = items.reduce((sum, b) => sum + sapOffenMinuten(b), 0)
+      const sollMinuten = Math.round((unverbuchtMinuten * prozent) / 100)
+      const { allocations, markierbarMinuten } = selectTeilverbuchungBisSoll(items, sollMinuten)
+      return {
+        datum: tag,
+        kurztext,
+        unverbuchtMinuten,
+        sollMinuten,
+        markierbarMinuten,
+        allocations
+      }
+    })
+    .filter((z) => z.unverbuchtMinuten > 0)
+    .sort((a, b) => {
+      if (a.datum !== b.datum) return a.datum.localeCompare(b.datum)
+      return a.kurztext.localeCompare(b.kurztext, 'de')
+    })
+
+  return { projektId, datum: scope, prozent, zeilen }
+}
+
+/** Wendet Teilverbuchungen an: sap_verbucht_minuten erhöhen, bei voller Dauer sap_ueberfuehrt_am setzen. */
+export function applyVerbuchung(projektId: number, datum: string | null = null): number {
+  const vorschlag = getVerbuchungsVorschlag(projektId, datum)
+  const allocations = vorschlag.zeilen.flatMap((z) => z.allocations)
+  if (allocations.length === 0) {
+    throw new Error(t('err.verbuchungEmpty'))
+  }
+
+  const database = getDb()
+  const getRow = database.prepare(
+    `SELECT dauer_minuten, sap_verbucht_minuten, sap_ueberfuehrt_am FROM zeitbuchungen WHERE id = ?`
+  )
+  const upd = database.prepare(
+    `UPDATE zeitbuchungen
+     SET sap_verbucht_minuten = ?, sap_ueberfuehrt_am = ?
+     WHERE id = ?`
+  )
+  const am = new Date().toISOString()
+
+  const tx = database.transaction(() => {
+    let count = 0
+    for (const alloc of allocations) {
+      const row = getRow.get(alloc.buchungId) as
+        | {
+            dauer_minuten: number | null
+            sap_verbucht_minuten: number | null
+            sap_ueberfuehrt_am: string | null
+          }
+        | undefined
+      if (!row) continue
+      const dauer = Math.max(0, Number(row.dauer_minuten ?? 0) || 0)
+      const bisher = Math.max(0, Number(row.sap_verbucht_minuten ?? 0) || 0)
+      const neu = Math.min(dauer, bisher + Math.max(0, alloc.minuten))
+      if (neu === bisher) continue
+      const stamp = neu >= dauer ? am : row.sap_ueberfuehrt_am ?? am
+      upd.run(neu, stamp, alloc.buchungId)
+      count += 1
+    }
+    return count
+  })
+  return tx()
+}
+
 export function clearSapByDatum(datum: string): number {
   const ids = listBuchungenByDatum(datum)
-    .filter((b) => istBuchungAbgeschlossen(b) && Boolean(b.sapUeberfuehrtAm))
+    .filter((b) => istBuchungAbgeschlossen(b) && (b.sapVerbuchtMinuten ?? 0) > 0)
     .map((b) => b.id)
   return clearBuchungenSapUeberfuehrt(ids)
 }
@@ -518,7 +740,7 @@ export function markSapByDatumProjekt(datum: string, projektId: number): number 
   const ids = listBuchungenByDatum(datum)
     .filter(
       (b) =>
-        b.projektId === projektId && istBuchungAbgeschlossen(b) && !b.sapUeberfuehrtAm
+        b.projektId === projektId && istBuchungAbgeschlossen(b) && sapOffenMinuten(b) > 0
     )
     .map((b) => b.id)
   return markBuchungenSapUeberfuehrt(ids)
@@ -530,7 +752,7 @@ export function clearSapByDatumProjekt(datum: string, projektId: number): number
       (b) =>
         b.projektId === projektId &&
         istBuchungAbgeschlossen(b) &&
-        Boolean(b.sapUeberfuehrtAm)
+        (b.sapVerbuchtMinuten ?? 0) > 0
     )
     .map((b) => b.id)
   return clearBuchungenSapUeberfuehrt(ids)
@@ -548,7 +770,7 @@ export function markSapByDatumProjektNotiz(
         b.projektId === projektId &&
         (b.notiz ?? '').trim() === topic &&
         istBuchungAbgeschlossen(b) &&
-        !b.sapUeberfuehrtAm
+        sapOffenMinuten(b) > 0
     )
     .map((b) => b.id)
   return markBuchungenSapUeberfuehrt(ids)
@@ -566,7 +788,7 @@ export function clearSapByDatumProjektNotiz(
         b.projektId === projektId &&
         (b.notiz ?? '').trim() === topic &&
         istBuchungAbgeschlossen(b) &&
-        Boolean(b.sapUeberfuehrtAm)
+        (b.sapVerbuchtMinuten ?? 0) > 0
     )
     .map((b) => b.id)
   return clearBuchungenSapUeberfuehrt(ids)
@@ -574,7 +796,11 @@ export function clearSapByDatumProjektNotiz(
 
 export function getLaufenderTimer(): ZeitbuchungMitProjekt | null {
   const row = getDb()
-    .prepare(`${BUCHUNG_SELECT} WHERE z.ende_zeit IS NULL AND z.quelle = 'timer' ORDER BY z.id DESC LIMIT 1`)
+    .prepare(
+      `${BUCHUNG_SELECT}
+       WHERE z.ende_zeit IS NULL AND z.quelle = 'timer' AND z.geloescht_am IS NULL
+       ORDER BY z.id DESC LIMIT 1`
+    )
     .get() as Record<string, unknown> | undefined
   return row ? mapBuchungMitProjekt(row) : null
 }
@@ -642,10 +868,29 @@ export function createBuchung(input: ZeitbuchungInput): ZeitbuchungMitProjekt {
 
 export function updateBuchung(id: number, input: ZeitbuchungInput): ZeitbuchungMitProjekt {
   const dauer = berechneDauerMinuten(input.startZeit, input.endeZeit, input.dauerMinuten)
-  getDb()
+  const dauerMin = Math.max(0, dauer ?? 0)
+  const database = getDb()
+  const prev = database
+    .prepare(`SELECT sap_verbucht_minuten, sap_ueberfuehrt_am FROM zeitbuchungen WHERE id = ?`)
+    .get(id) as
+    | { sap_verbucht_minuten: number | null; sap_ueberfuehrt_am: string | null }
+    | undefined
+  let sapVerbucht = Math.max(0, Number(prev?.sap_verbucht_minuten ?? 0) || 0)
+  if (sapVerbucht <= 0 && prev?.sap_ueberfuehrt_am) {
+    sapVerbucht = dauerMin
+  }
+  sapVerbucht = Math.min(sapVerbucht, dauerMin)
+  const sapStamp =
+    sapVerbucht <= 0
+      ? null
+      : sapVerbucht >= dauerMin
+        ? (prev?.sap_ueberfuehrt_am ?? new Date().toISOString())
+        : prev?.sap_ueberfuehrt_am
+  database
     .prepare(
       `UPDATE zeitbuchungen
-       SET projekt_id = ?, datum = ?, start_zeit = ?, ende_zeit = ?, dauer_minuten = ?, notiz = ?
+       SET projekt_id = ?, datum = ?, start_zeit = ?, ende_zeit = ?, dauer_minuten = ?, notiz = ?,
+           sap_verbucht_minuten = ?, sap_ueberfuehrt_am = ?
        WHERE id = ?`
     )
     .run(
@@ -655,6 +900,8 @@ export function updateBuchung(id: number, input: ZeitbuchungInput): ZeitbuchungM
       input.endeZeit ?? null,
       dauer,
       input.notiz?.trim() ?? '',
+      sapVerbucht,
+      sapStamp,
       id
     )
 
@@ -671,21 +918,38 @@ function getOffeneAnwesenheitRow(): Record<string, unknown> | undefined {
     .get() as Record<string, unknown> | undefined
 }
 
+/** Summe aktiver (nicht soft-gelöschter) abgeschlossener Buchungsminuten eines Tags. */
+export function sumAktiveBuchungsMinuten(datum: string): number {
+  return listBuchungenByDatum(datum)
+    .filter(istBuchungAbgeschlossen)
+    .reduce((sum, b) => sum + Math.max(0, b.dauerMinuten ?? 0), 0)
+}
+
+/**
+ * Pause = Brutto (Kommen→Gehen/jetzt) − gebuchte Zeit (− laufender Timer).
+ * Darf negativ sein. Gespeicherte pausen_minuten werden nicht mehr blind übernommen.
+ */
 function mapAnwesenheit(row: Record<string, unknown>, jetzt = new Date()): Anwesenheit {
   const kommenAm = row.kommen_am as string
   const gehenAm = (row.gehen_am as string) ?? null
   const pauseSeit = (row.pause_seit as string) ?? null
-  const pausenMinuten = Number(row.pausen_minuten ?? 0)
   const kommenMs = new Date(kommenAm).getTime()
   const endeMs = gehenAm ? new Date(gehenAm).getTime() : jetzt.getTime()
   const bruttoSekunden = Math.max(0, Math.floor((endeMs - kommenMs) / 1000))
+  const bruttoMinuten = Math.floor(bruttoSekunden / 60)
 
-  let pausenSekunden = pausenMinuten * 60
-  if (pauseSeit) {
-    pausenSekunden += Math.max(0, Math.floor((jetzt.getTime() - new Date(pauseSeit).getTime()) / 1000))
+  const datum = formatDate(new Date(kommenAm))
+  let gebuchtMinuten = sumAktiveBuchungsMinuten(datum)
+  if (!gehenAm) {
+    const laufend = getLaufenderTimer()
+    if (laufend && laufend.datum === datum && !laufend.endeZeit) {
+      gebuchtMinuten += laufendeTimerMinuten(laufend, jetzt)
+    }
   }
 
-  const stempelSekunden = Math.max(0, bruttoSekunden - pausenSekunden)
+  const pausenMinuten = bruttoMinuten - gebuchtMinuten
+  const pausenSekunden = pausenMinuten * 60
+  const stempelSekunden = bruttoSekunden - pausenSekunden
 
   return {
     id: row.id as number,
@@ -698,6 +962,14 @@ function mapAnwesenheit(row: Record<string, unknown>, jetzt = new Date()): Anwes
     bruttoSekunden,
     istOffen: gehenAm == null
   }
+}
+
+/** Schreibt die abgeleitete Pause zurück, damit DB und Anzeige übereinstimmen. */
+function persistDerivedPause(row: Record<string, unknown>, mapped: Anwesenheit): void {
+  if (Number(row.pausen_minuten ?? 0) === mapped.pausenMinuten) return
+  getDb()
+    .prepare('UPDATE anwesenheit SET pausen_minuten = ? WHERE id = ?')
+    .run(mapped.pausenMinuten, mapped.id)
 }
 
 /**
@@ -727,6 +999,7 @@ export function listAnwesenheitMinutenByRange(von: string, bis: string): Anwesen
   const map = new Map<string, number>()
   for (const row of rows) {
     const a = mapAnwesenheit(row, jetzt)
+    persistDerivedPause(row, a)
     const datum = formatDate(new Date(a.kommenAm))
     if (datum < von || datum > bis) continue
     map.set(datum, (map.get(datum) ?? 0) + Math.floor(a.stempelSekunden / 60))
@@ -740,7 +1013,11 @@ export function listAnwesenheitMinutenByRange(von: string, bis: string): Anwesen
 
 export function getAnwesenheit(jetzt = new Date()): Anwesenheit | null {
   const offen = getOffeneAnwesenheitRow()
-  if (offen) return mapAnwesenheit(offen, jetzt)
+  if (offen) {
+    const mapped = mapAnwesenheit(offen, jetzt)
+    persistDerivedPause(offen, mapped)
+    return mapped
+  }
 
   // Nach Gehen: letzte heutige Sitzung anzeigen (Kommen/Gehen-Uhrzeiten)
   const heute = formatDate(jetzt)
@@ -754,7 +1031,9 @@ export function getAnwesenheit(jetzt = new Date()): Anwesenheit | null {
     .all() as Array<Record<string, unknown>>
   const heutige = geschlossen.find((row) => formatDate(new Date(row.kommen_am as string)) === heute)
   if (!heutige) return null
-  return mapAnwesenheit(heutige, jetzt)
+  const mapped = mapAnwesenheit(heutige, jetzt)
+  persistDerivedPause(heutige, mapped)
+  return mapped
 }
 
 function endPauseIfAny(row: Record<string, unknown>): void {
@@ -866,7 +1145,8 @@ function inferGehenAmForKommenTag(kommenAm: string, lastSeenAm: string | null): 
 
   const buchungen = getDb()
     .prepare(
-      `SELECT start_zeit, ende_zeit, dauer_minuten FROM zeitbuchungen WHERE datum = ?`
+      `SELECT start_zeit, ende_zeit, dauer_minuten FROM zeitbuchungen
+       WHERE datum = ? AND geloescht_am IS NULL`
     )
     .all(tag) as Array<{
     start_zeit: string | null
@@ -992,6 +1272,109 @@ export function closeStaleOpenAnwesenheit(jetzt = new Date()): Anwesenheit | nul
  * Repariert bereits gespeicherte Sitzungen, die über Mitternacht hinaus geschlossen wurden
  * (typisch: Shutdown-Gehen fehlte, Gehen erst beim nächsten Start).
  */
+function parseZeitToHms(zeit: string): { h: number; m: number; s: number } {
+  const parts = zeit.trim().split(':').map((x) => Number(x))
+  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n))) {
+    throw new Error(t('err.invalidTime'))
+  }
+  return { h: parts[0], m: parts[1], s: parts[2] ?? 0 }
+}
+
+function localDateTimeToIso(datum: string, zeit: string): string {
+  const [y, m, d] = datum.split('-').map(Number)
+  if (!y || !m || !d) throw new Error(t('err.invalidDate'))
+  const { h, m: min, s } = parseZeitToHms(zeit)
+  return new Date(y, m - 1, d, h, min, s).toISOString()
+}
+
+/** Anwesenheitssitzung eines Kalendertags (nach lokalem Kommen-Datum). */
+export function getAnwesenheitByDatum(datum: string, jetzt = new Date()): Anwesenheit | null {
+  const rows = getDb()
+    .prepare(`SELECT * FROM anwesenheit ORDER BY id DESC`)
+    .all() as Array<Record<string, unknown>>
+  const matches = rows.filter((row) => formatDate(new Date(row.kommen_am as string)) === datum)
+  if (matches.length === 0) return null
+  const offen = matches.find((row) => row.gehen_am == null)
+  const row = offen ?? matches[0]
+  const mapped = mapAnwesenheit(row, jetzt)
+  persistDerivedPause(row, mapped)
+  return mapped
+}
+
+/**
+ * Anwesenheit eines Tags anlegen oder Zeiten korrigieren.
+ * Gehen leer + Datum = heute → Sitzung bleibt/wird offen.
+ * Pause wird immer als Brutto (Kommen→Gehen/jetzt) − gebuchte Zeit gesetzt und darf negativ sein.
+ */
+export function upsertAnwesenheitForDatum(
+  datum: string,
+  input: { kommenZeit: string; gehenZeit: string | null; pausenMinuten?: number },
+  jetzt = new Date()
+): Anwesenheit {
+  const kommenZeit = input.kommenZeit?.trim()
+  if (!kommenZeit) throw new Error(t('err.kommenRequired'))
+
+  const gehenZeit = input.gehenZeit?.trim() ? input.gehenZeit.trim() : null
+  const heute = formatDate(jetzt)
+
+  if (!gehenZeit && datum !== heute) {
+    throw new Error(t('err.gehenRequiredPast'))
+  }
+
+  const kommenIso = localDateTimeToIso(datum, kommenZeit)
+  let gehenIso: string | null = null
+  if (gehenZeit) {
+    gehenIso = localDateTimeToIso(datum, gehenZeit)
+    if (new Date(gehenIso).getTime() < new Date(kommenIso).getTime()) {
+      throw new Error(t('err.gehenBeforeKommen'))
+    }
+  }
+
+  const endeMs = gehenIso ? new Date(gehenIso).getTime() : jetzt.getTime()
+  const bruttoMinuten = Math.max(
+    0,
+    Math.round((endeMs - new Date(kommenIso).getTime()) / 60_000)
+  )
+  const gebuchtMinuten = sumAktiveBuchungsMinuten(datum)
+  const pausenMinuten = bruttoMinuten - gebuchtMinuten
+
+  const existing = getAnwesenheitByDatum(datum, jetzt)
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE anwesenheit
+         SET kommen_am = ?, gehen_am = ?, pause_seit = NULL, pausen_minuten = ?, last_seen_am = ?
+         WHERE id = ?`
+      )
+      .run(kommenIso, gehenIso, pausenMinuten, gehenIso ?? jetzt.toISOString(), existing.id)
+
+    const row = getDb()
+      .prepare('SELECT * FROM anwesenheit WHERE id = ?')
+      .get(existing.id) as Record<string, unknown>
+    return mapAnwesenheit(row, jetzt)
+  }
+
+  // Keine zweite offene Sitzung erlauben, wenn wir heute offen anlegen
+  if (!gehenIso) {
+    const offen = getOffeneAnwesenheitRow()
+    if (offen) {
+      throw new Error(t('err.alreadyCheckedIn'))
+    }
+  }
+
+  const result = getDb()
+    .prepare(
+      `INSERT INTO anwesenheit (kommen_am, gehen_am, pause_seit, pausen_minuten, last_seen_am)
+       VALUES (?, ?, NULL, ?, ?)`
+    )
+    .run(kommenIso, gehenIso, pausenMinuten, gehenIso ?? jetzt.toISOString())
+
+  const row = getDb()
+    .prepare('SELECT * FROM anwesenheit WHERE id = ?')
+    .get(result.lastInsertRowid) as Record<string, unknown>
+  return mapAnwesenheit(row, jetzt)
+}
+
 export function repairCrossDayAnwesenheit(): number {
   const rows = getDb()
     .prepare(`SELECT * FROM anwesenheit WHERE gehen_am IS NOT NULL`)
@@ -1319,20 +1702,18 @@ export function redistributeOhneKurztext(
   const themaStmt = getDb().prepare(
     `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
   )
-  const updateDauerStmt = getDb().prepare(
-    `UPDATE zeitbuchungen
-     SET dauer_minuten = ?, start_zeit = NULL, ende_zeit = NULL, quelle = 'manuell',
-         sap_ueberfuehrt_am = NULL
-     WHERE id = ?`
+  const softDeleteStmt = getDb().prepare(
+    `UPDATE zeitbuchungen SET geloescht_am = ? WHERE id = ? AND geloescht_am IS NULL`
   )
-  const deleteStmt = getDb().prepare(`DELETE FROM zeitbuchungen WHERE id = ?`)
+  const jetztIso = new Date().toISOString()
 
   const tx = getDb().transaction(() => {
-    // Pool aus leeren Buchungen von hinten aufbrauchen
+    // Pool aus leeren Buchungen von hinten aufbrauchen; Originale soft-löschen
     let remaining = want
     const pool = emptyCompleted.map((b) => ({
       id: b.id,
-      minuten: b.dauerMinuten ?? 0
+      minuten: b.dauerMinuten ?? 0,
+      notiz: b.notiz ?? ''
     }))
 
     for (let i = pool.length - 1; i >= 0 && remaining > 0; i -= 1) {
@@ -1341,10 +1722,9 @@ export function redistributeOhneKurztext(
       const take = Math.min(entry.minuten, remaining)
       entry.minuten -= take
       remaining -= take
-      if (entry.minuten <= 0) {
-        deleteStmt.run(entry.id)
-      } else {
-        updateDauerStmt.run(entry.minuten, entry.id)
+      softDeleteStmt.run(jetztIso, entry.id)
+      if (entry.minuten > 0) {
+        insertStmt.run(projektId, datum, entry.minuten, entry.notiz)
       }
     }
 
@@ -1368,7 +1748,8 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
     .prepare(
       `SELECT projekt_id AS id, COALESCE(SUM(dauer_minuten), 0) AS minuten
        FROM zeitbuchungen
-       WHERE dauer_minuten IS NOT NULL
+       WHERE geloescht_am IS NULL
+         AND dauer_minuten IS NOT NULL
          AND (
            ende_zeit IS NOT NULL
            OR (quelle = 'manuell' AND dauer_minuten > 0)
@@ -1381,6 +1762,7 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
       `SELECT projekt_id AS id, COALESCE(SUM(dauer_minuten), 0) AS minuten
        FROM zeitbuchungen
        WHERE datum = ?
+         AND geloescht_am IS NULL
          AND dauer_minuten IS NOT NULL
          AND (
            ende_zeit IS NOT NULL
@@ -1400,9 +1782,37 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
     sapByProjekt.set(b.projektId, list)
   }
 
+  // Verbucht / Unverbucht (Teilverbuchung berücksichtigt), alle Tage
+  const unverbuchtMap = new Map<number, number>()
+  const verbuchtMap = new Map<number, number>()
+  const alleOffen = getDb()
+    .prepare(
+      `${BUCHUNG_SELECT}
+       WHERE z.geloescht_am IS NULL
+         AND (
+           z.ende_zeit IS NOT NULL
+           OR (z.quelle = 'manuell' AND z.dauer_minuten IS NOT NULL AND z.dauer_minuten > 0)
+         )`
+    )
+    .all() as Record<string, unknown>[]
+  for (const row of alleOffen) {
+    const b = mapBuchungMitProjekt(row)
+    if (!istBuchungAbgeschlossen(b)) continue
+    const verbucht = Math.max(0, b.sapVerbuchtMinuten ?? 0)
+    if (verbucht > 0) {
+      verbuchtMap.set(b.projektId, (verbuchtMap.get(b.projektId) ?? 0) + verbucht)
+    }
+    const offen = sapOffenMinuten(b)
+    if (offen > 0) {
+      unverbuchtMap.set(b.projektId, (unverbuchtMap.get(b.projektId) ?? 0) + offen)
+    }
+  }
+
   return projekte.map((p) => {
     let gesamtMinuten = sumMap.get(p.id) ?? 0
     const heuteAbgeschlossenMinuten = heuteMap.get(p.id) ?? 0
+    const verbuchtMinuten = verbuchtMap.get(p.id) ?? 0
+    const unverbuchtMinuten = unverbuchtMap.get(p.id) ?? 0
     let heuteMinuten = heuteAbgeschlossenMinuten
     const timerLaeuft = laufend?.projektId === p.id
     if (timerLaeuft && laufend?.startZeit) {
@@ -1418,6 +1828,8 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
       gesamtMinuten,
       heuteMinuten,
       heuteAbgeschlossenMinuten,
+      verbuchtMinuten,
+      unverbuchtMinuten,
       heuteSapStatus: sap.status,
       heuteSapUeberfuehrtAm: sap.zuletztUeberfuehrtAm,
       themen: buildThemenFuerProjekt(p.id, heute, alleHeute, laufend),
@@ -1528,6 +1940,223 @@ function addMinutesToDate(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60_000)
 }
 
+/** Verfügbare Pausenminuten einer Anwesenheitssitzung (inkl. laufender Pause). */
+function pausenMinutenVerfuegbar(
+  row: Record<string, unknown>,
+  jetzt = new Date()
+): number {
+  let pausenMinuten = Number(row.pausen_minuten ?? 0)
+  const pauseSeit = (row.pause_seit as string | null) ?? null
+  if (pauseSeit) {
+    pausenMinuten += Math.max(
+      0,
+      Math.round((jetzt.getTime() - new Date(pauseSeit).getTime()) / 60_000)
+    )
+  }
+  return Math.max(0, pausenMinuten)
+}
+
+/**
+ * Nachträgliche Korrektur einer Buchung im Kalender:
+ * Original wird soft-gelöscht (bleibt sichtbar, zählt nicht),
+ * Rest/Zuwachs als Dauer-Buchung ohne Uhrzeit; Pause wird angepasst.
+ */
+export function adjustBuchungNachtraeglich(
+  id: number,
+  input: {
+    projektId: number
+    notiz?: string
+    behaltenMinuten: number
+    ausPauseMinuten?: number
+  },
+  jetzt = new Date()
+): ZeitbuchungMitProjekt | null {
+  const original = getBuchungMitProjekt(id)
+  if (original.geloeschtAm) {
+    throw new Error(t('err.bookingAlreadyDeleted'))
+  }
+  if (!istBuchungAbgeschlossen(original)) {
+    throw new Error(t('err.bookingStillRunning'))
+  }
+
+  const originalMinuten = Math.max(0, Math.round(original.dauerMinuten ?? 0))
+  if (originalMinuten <= 0) {
+    throw new Error(t('err.bookingNoDuration'))
+  }
+
+  const behalten = Math.max(0, Math.round(Number(input.behaltenMinuten) || 0))
+  const ausPause = Math.max(0, Math.round(Number(input.ausPauseMinuten) || 0))
+  if (behalten > originalMinuten) {
+    throw new Error(
+      t('err.adjustKeepTooMuch', { want: behalten, available: originalMinuten })
+    )
+  }
+
+  const zuPause = originalMinuten - behalten
+  const neueDauer = behalten + ausPause
+  const notiz = input.notiz?.trim() ?? ''
+  const projektId = Number(input.projektId)
+  if (!Number.isFinite(projektId)) {
+    throw new Error(t('err.projectNotFound'))
+  }
+
+  const projekt = getProjekt(projektId)
+  if (!projekt?.auftragsnummer || !projekt.arbeitsplatz) {
+    throw new Error(t('err.orderNeedsFields'))
+  }
+
+  const anw = getAnwesenheitByDatum(original.datum, jetzt)
+  if ((zuPause > 0 || ausPause > 0) && !anw) {
+    throw new Error(t('err.attendanceNotFound'))
+  }
+
+  let anwRow: Record<string, unknown> | null = null
+  if (anw) {
+    anwRow = getDb()
+      .prepare('SELECT * FROM anwesenheit WHERE id = ?')
+      .get(anw.id) as Record<string, unknown>
+  }
+
+  if (ausPause > 0 && anwRow) {
+    const verfuegbar = pausenMinutenVerfuegbar(anwRow, jetzt)
+    if (ausPause > verfuegbar) {
+      throw new Error(
+        t('err.pauseAllocateTooMuch', { want: ausPause, available: verfuegbar })
+      )
+    }
+  }
+
+  const jetztIso = jetzt.toISOString()
+  const tx = getDb().transaction(() => {
+    getDb()
+      .prepare(
+        `UPDATE zeitbuchungen SET geloescht_am = ? WHERE id = ? AND geloescht_am IS NULL`
+      )
+      .run(jetztIso, id)
+
+    let created: ZeitbuchungMitProjekt | null = null
+    if (neueDauer > 0) {
+      created = createBuchung({
+        projektId,
+        datum: original.datum,
+        startZeit: null,
+        endeZeit: null,
+        dauerMinuten: neueDauer,
+        notiz,
+        quelle: 'manuell'
+      })
+    } else if (notiz) {
+      getDb()
+        .prepare(
+          `INSERT OR IGNORE INTO tages_themen (datum, projekt_id, kurztext) VALUES (?, ?, ?)`
+        )
+        .run(original.datum, projektId, notiz)
+    }
+
+    if (anwRow && (zuPause !== 0 || ausPause !== 0)) {
+      const pauseSeit = (anwRow.pause_seit as string | null) ?? null
+      const wasInLivePause = Boolean(pauseSeit) && anwRow.gehen_am == null
+      let pausenMinuten = pausenMinutenVerfuegbar(anwRow, jetzt)
+      // Negativ erlaubt (Anwesenheit < Gebucht)
+      pausenMinuten = pausenMinuten + zuPause - ausPause
+      getDb()
+        .prepare(
+          `UPDATE anwesenheit
+           SET pausen_minuten = ?, pause_seit = ?
+           WHERE id = ?`
+        )
+        .run(pausenMinuten, wasInLivePause ? jetztIso : null, anwRow.id)
+    }
+
+    return created
+  })
+
+  return tx()
+}
+
+/**
+ * Bucht angesammelte Pausenzeit nachträglich auf Aufträge um.
+ * Verringert pausen_minuten entsprechend; Rest bleibt Pause.
+ */
+export function allocatePauseToProjekte(
+  datum: string,
+  allocations: Array<{ projektId: number; minuten: number; notiz?: string }>,
+  jetzt = new Date()
+): number {
+  const anw = getAnwesenheitByDatum(datum, jetzt)
+  if (!anw) {
+    throw new Error(t('err.attendanceNotFound'))
+  }
+
+  const want = allocations
+    .map((a) => ({
+      projektId: a.projektId,
+      minuten: Math.max(0, Math.round(Number(a.minuten) || 0)),
+      notiz: a.notiz?.trim() ?? ''
+    }))
+    .filter((a) => a.minuten > 0)
+
+  const summe = want.reduce((acc, a) => acc + a.minuten, 0)
+  if (summe <= 0) {
+    throw new Error(t('err.pauseAllocateEmpty'))
+  }
+
+  const row = getDb()
+    .prepare('SELECT * FROM anwesenheit WHERE id = ?')
+    .get(anw.id) as Record<string, unknown>
+
+  let pausenMinuten = Number(row.pausen_minuten ?? 0)
+  const pauseSeit = (row.pause_seit as string | null) ?? null
+  const wasInLivePause = Boolean(pauseSeit) && row.gehen_am == null
+  if (pauseSeit) {
+    const extra = Math.max(
+      0,
+      Math.round((jetzt.getTime() - new Date(pauseSeit).getTime()) / 60_000)
+    )
+    pausenMinuten += extra
+  }
+
+  if (summe > pausenMinuten) {
+    throw new Error(
+      t('err.pauseAllocateTooMuch', { want: summe, available: pausenMinuten })
+    )
+  }
+
+  const tx = getDb().transaction(() => {
+    for (const alloc of want) {
+      const projekt = getProjekt(alloc.projektId)
+      if (!projekt?.auftragsnummer || !projekt.arbeitsplatz) {
+        throw new Error(
+          t('err.orderNeedsFieldsNamed', {
+            name: String(projekt?.kuerzel ?? alloc.projektId)
+          })
+        )
+      }
+      createBuchung({
+        projektId: alloc.projektId,
+        datum,
+        startZeit: null,
+        endeZeit: null,
+        dauerMinuten: alloc.minuten,
+        notiz: alloc.notiz,
+        quelle: 'manuell'
+      })
+    }
+
+    const rest = pausenMinuten - summe
+    getDb()
+      .prepare(
+        `UPDATE anwesenheit
+         SET pausen_minuten = ?, pause_seit = ?
+         WHERE id = ?`
+      )
+      .run(rest, wasInLivePause ? jetzt.toISOString() : null, anw.id)
+  })
+  tx()
+
+  return summe
+}
+
 /** Verteilt eine Away-Lücke auf Pause und/oder Aufträge. */
 export function resolveIdleGap(
   vonIso: string,
@@ -1636,6 +2265,15 @@ export function getEinstellungen(): Einstellungen {
         csvSpalten.push(col)
       }
     }
+    // Verbucht/Unverbucht nach „stunden“ einfügen (bestehende Einstellungen)
+    const insertAfterStunden = (col: string): void => {
+      if (csvSpalten.includes(col)) return
+      const idx = csvSpalten.indexOf('stunden')
+      if (idx >= 0) csvSpalten.splice(idx + 1, 0, col)
+      else csvSpalten.push(col)
+    }
+    insertAfterStunden('stundenUnverbucht')
+    insertAfterStunden('stundenVerbucht')
   }
 
   return {

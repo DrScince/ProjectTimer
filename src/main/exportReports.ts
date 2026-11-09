@@ -6,17 +6,19 @@ import type { CsvVorschauZeile, ExportOptions } from '../shared/types'
 import { t } from '../shared/i18n'
 
 const EXCEL_COLUMNS: Array<{
-  key: keyof CsvVorschauZeile | 'sapUeberfuehrt'
+  key: keyof CsvVorschauZeile
   header: string
   width: number
 }> = [
   { key: 'personalnummer', header: 'personalnummer', width: 14 },
   { key: 'datum', header: 'datum', width: 12 },
   { key: 'stunden', header: 'stunden', width: 12 },
+  { key: 'stundenVerbucht', header: 'stundenVerbucht', width: 14 },
+  { key: 'stundenUnverbucht', header: 'stundenUnverbucht', width: 15 },
   { key: 'auftragsnummer', header: 'auftragsnummer', width: 14 },
   { key: 'arbeitsplatz', header: 'arbeitsplatz', width: 14 },
   { key: 'projektKuerzel', header: 'projektKuerzel', width: 14 },
-  { key: 'kurztext', header: 'kurztext', width: 28 },
+  { key: 'kurztext', header: 'kurztext', width: 24 },
   { key: 'sapUeberfuehrt', header: 'sapUeberfuehrt', width: 14 }
 ]
 
@@ -58,6 +60,8 @@ export async function buildExcelBuffer(
       personalnummer: row.personalnummer,
       datum: row.datum,
       stunden: row.stunden,
+      stundenVerbucht: row.stundenVerbucht,
+      stundenUnverbucht: row.stundenUnverbucht,
       auftragsnummer: row.auftragsnummer,
       arbeitsplatz: row.arbeitsplatz,
       projektKuerzel: row.projektKuerzel,
@@ -66,6 +70,8 @@ export async function buildExcelBuffer(
     })
     // Dauer als Text, damit Excel nicht in Uhrzeit umwandelt
     excelRow.getCell('stunden').numFmt = '@'
+    excelRow.getCell('stundenVerbucht').numFmt = '@'
+    excelRow.getCell('stundenUnverbucht').numFmt = '@'
     excelRow.getCell('datum').numFmt = '@'
     excelRow.getCell('personalnummer').numFmt = '@'
     excelRow.getCell('auftragsnummer').numFmt = '@'
@@ -115,13 +121,15 @@ export async function buildPdfBuffer(
 
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right
     const cols = [
-      { key: 'datum' as const, label: t('export.colDate'), width: 0.1 },
-      { key: 'stunden' as const, label: t('export.colHours'), width: 0.1 },
-      { key: 'auftragsnummer' as const, label: t('export.colOrder'), width: 0.12 },
-      { key: 'arbeitsplatz' as const, label: t('export.colWorkplace'), width: 0.12 },
-      { key: 'projektKuerzel' as const, label: t('export.colProject'), width: 0.1 },
-      { key: 'kurztext' as const, label: t('export.colText'), width: 0.28 },
-      { key: 'sapUeberfuehrt' as const, label: t('export.colSap'), width: 0.1 }
+      { key: 'datum' as const, label: t('export.colDate'), width: 0.09 },
+      { key: 'stunden' as const, label: t('export.colHours'), width: 0.09 },
+      { key: 'stundenVerbucht' as const, label: t('export.colBooked'), width: 0.09 },
+      { key: 'stundenUnverbucht' as const, label: t('export.colUnbooked'), width: 0.1 },
+      { key: 'auftragsnummer' as const, label: t('export.colOrder'), width: 0.1 },
+      { key: 'arbeitsplatz' as const, label: t('export.colWorkplace'), width: 0.1 },
+      { key: 'projektKuerzel' as const, label: t('export.colProject'), width: 0.08 },
+      { key: 'kurztext' as const, label: t('export.colText'), width: 0.2 },
+      { key: 'sapUeberfuehrt' as const, label: t('export.colSap'), width: 0.08 }
     ]
     const colWidths = cols.map((c) => c.width * pageWidth)
     const startX = doc.page.margins.left
@@ -156,6 +164,8 @@ export async function buildPdfBuffer(
       const values = [
         row.datum,
         row.stunden,
+        row.stundenVerbucht,
+        row.stundenUnverbucht,
         row.auftragsnummer || '–',
         row.arbeitsplatz || '–',
         row.projektKuerzel,

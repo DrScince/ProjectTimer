@@ -3,9 +3,12 @@ import {
   formatDateDe,
   getEinstellungen,
   istBuchungAbgeschlossen,
+  istBuchungTeilweiseVerbucht,
+  istBuchungVollVerbucht,
   listBuchungenByRange,
   markBuchungenSapUeberfuehrt,
-  minutenZuStundenCsv
+  minutenZuStundenCsv,
+  sapOffenMinuten
 } from './database'
 import type {
   CsvVorschauZeile,
@@ -119,18 +122,25 @@ function sapStatusForIds(
   if (buchungen.length === 0) {
     return { sapStatus: 'offen', sapUeberfuehrtAm: null }
   }
-  const transferred = buchungen.filter((b) => Boolean(b.sapUeberfuehrtAm))
-  if (transferred.length === 0) {
+  const voll = buchungen.filter((b) => istBuchungVollVerbucht(b))
+  const teilweise = buchungen.filter((b) => istBuchungTeilweiseVerbucht(b))
+  if (voll.length === 0 && teilweise.length === 0) {
     return { sapStatus: 'offen', sapUeberfuehrtAm: null }
   }
-  if (transferred.length === buchungen.length) {
-    const times = Array.from(new Set(transferred.map((b) => b.sapUeberfuehrtAm as string)))
+  const times = buchungen
+    .map((b) => b.sapUeberfuehrtAm)
+    .filter((x): x is string => Boolean(x))
+  const unique = Array.from(new Set(times))
+  if (voll.length === buchungen.length) {
     return {
       sapStatus: 'ueberfuehrt',
-      sapUeberfuehrtAm: times.length === 1 ? times[0] : null
+      sapUeberfuehrtAm: unique.length === 1 ? unique[0] : null
     }
   }
-  return { sapStatus: 'gemischt', sapUeberfuehrtAm: null }
+  return {
+    sapStatus: 'gemischt',
+    sapUeberfuehrtAm: unique.length === 1 ? unique[0] : null
+  }
 }
 
 function sapUeberfuehrtCsvLabel(status: SapTransferStatus): string {
@@ -176,10 +186,17 @@ export function buildCsvVorschau(
     })
     .map(({ buchung, minuten, items }) => {
       const sap = sapStatusForIds(items)
+      const verbuchtMinuten = items.reduce(
+        (sum, item) => sum + Math.max(0, item.sapVerbuchtMinuten ?? 0),
+        0
+      )
+      const unverbuchtMinuten = items.reduce((sum, item) => sum + sapOffenMinuten(item), 0)
       return {
         personalnummer: settings.personalnummer,
         datum: formatDateDe(buchung.datum),
         stunden: minutenZuStundenCsv(minuten),
+        stundenVerbucht: minutenZuStundenCsv(verbuchtMinuten),
+        stundenUnverbucht: minutenZuStundenCsv(unverbuchtMinuten),
         auftragsnummer: buchung.auftragsnummer,
         arbeitsplatz: buchung.arbeitsplatz,
         projektKuerzel: buchung.projektKuerzel,

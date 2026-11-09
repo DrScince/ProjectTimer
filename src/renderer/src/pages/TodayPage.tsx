@@ -11,7 +11,8 @@ import type {
   Anwesenheit,
   EmpfaengerArt,
   ProjektMitZeit,
-  TagesThema
+  TagesThema,
+  VerbuchungsVorschlag
 } from '../../../shared/types'
 import {
   IconCheck,
@@ -24,7 +25,14 @@ import {
   IconX
 } from '../icons'
 import { useI18n } from '../i18n'
-import { formatDateTimeLocal, formatDauer, formatSekunden, heuteIso } from '../utils'
+import {
+  formatDateTimeLocal,
+  formatDatumDe,
+  formatDauer,
+  formatSekunden,
+  heuteIso,
+  sumVerbuchungByKurztext
+} from '../utils'
 
 type Props = {
   onNeuerAuftrag?: () => void
@@ -64,6 +72,15 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
     Array<{ key: string; kurztext: string; minuten: number }>
   >([])
   const [redistributeNewText, setRedistributeNewText] = useState('')
+  const [showPauseAllocate, setShowPauseAllocate] = useState(false)
+  const [pauseAllocRows, setPauseAllocRows] = useState<
+    Array<{ projektId: number; label: string; minuten: number }>
+  >([])
+  const [pauseAllocSaving, setPauseAllocSaving] = useState(false)
+  const [verbuchenVorschlag, setVerbuchenVorschlag] = useState<VerbuchungsVorschlag | null>(null)
+  const [verbuchenLabel, setVerbuchenLabel] = useState('')
+  const [verbuchenSaving, setVerbuchenSaving] = useState(false)
+  const [verbuchenError, setVerbuchenError] = useState('')
 
   const load = useCallback(async (opts?: { animate?: boolean }) => {
     const [a, p, settings] = await Promise.all([
@@ -131,6 +148,20 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
 
   const aktiverAuftrag = projekte.find((p) => p.timerLaeuft) ?? null
 
+  const pauseMinutenVerfuegbar = useMemo(() => {
+    if (!stempelLive) return 0
+    const sek = Math.max(
+      0,
+      (stempelLive.bruttoSekunden ?? 0) - (stempelLive.stempelSekunden ?? 0)
+    )
+    return Math.floor(sek / 60)
+  }, [stempelLive])
+
+  const pauseAllocUsed = useMemo(
+    () => pauseAllocRows.reduce((sum, r) => sum + r.minuten, 0),
+    [pauseAllocRows]
+  )
+
   /** Aktiver Track immer oben (nur Anzeige, Drag speichert die sichtbare Reihenfolge). */
   const angezeigteProjekte = useMemo(() => {
     const activeIdx = projekte.findIndex((p) => p.timerLaeuft)
@@ -139,6 +170,57 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
     const [active] = next.splice(activeIdx, 1)
     return [active, ...next]
   }, [projekte])
+
+  function openPauseAllocate(): void {
+    setError('')
+    if (pauseMinutenVerfuegbar <= 0) {
+      setError(t('stempel.allocatePauseEmpty'))
+      return
+    }
+    setPauseAllocRows(
+      projekte.map((p) => ({
+        projektId: p.id,
+        label: `${p.auftragsnummer ? `${p.auftragsnummer} · ` : ''}${p.kuerzel} – ${p.name}`,
+        minuten: 0
+      }))
+    )
+    setShowPauseAllocate(true)
+  }
+
+  function setPauseAllocMinuten(projektId: number, value: number): void {
+    const raw = Math.max(0, Math.floor(value || 0))
+    setPauseAllocRows((prev) => {
+      const others = prev
+        .filter((r) => r.projektId !== projektId)
+        .reduce((sum, r) => sum + r.minuten, 0)
+      const maxForRow = Math.max(0, pauseMinutenVerfuegbar - others)
+      const clamped = Math.min(raw, maxForRow)
+      return prev.map((r) => (r.projektId === projektId ? { ...r, minuten: clamped } : r))
+    })
+  }
+
+  async function handlePauseAllocateSubmit(): Promise<void> {
+    const allocations = pauseAllocRows.filter((r) => r.minuten > 0)
+    if (allocations.length === 0) {
+      setError(t('err.pauseAllocateEmpty'))
+      return
+    }
+    setPauseAllocSaving(true)
+    setError('')
+    try {
+      const moved = await window.api.anwesenheit.allocatePause(
+        heuteIso(),
+        allocations.map((r) => ({ projektId: r.projektId, minuten: r.minuten }))
+      )
+      setShowPauseAllocate(false)
+      setSapMessage(t('stempel.allocatePauseDone', { minutes: moved }))
+      await load({ animate: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('stempel.errManual'))
+    } finally {
+      setPauseAllocSaving(false)
+    }
+  }
 
   async function handleKommen() {
     setError('')
@@ -308,6 +390,54 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : t('stempel.errSap'))
+    }
+  }
+
+  async function openVerbuchen(projekt: ProjektMitZeit): Promise<void> {
+    setError('')
+    setVerbuchenError('')
+    try {
+      // Alle unverbuchten Tage dieses Auftrags (nicht nur heute)
+      const vorschlag = await window.api.buchungen.verbuchungsVorschlag(projekt.id, null)
+      if (vorschlag.zeilen.length === 0) {
+        setError(
+          projekt.timerLaeuft ? t('stempel.verbuchenRunningOnly') : t('stempel.verbuchenEmpty')
+        )
+        return
+      }
+      setVerbuchenLabel(
+        `${projekt.auftragsnummer ? `${projekt.auftragsnummer} · ` : ''}${projekt.kuerzel}`
+      )
+      setVerbuchenVorschlag(vorschlag)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('stempel.errSap'))
+    }
+  }
+
+  function closeVerbuchen(): void {
+    if (verbuchenSaving) return
+    setVerbuchenVorschlag(null)
+    setVerbuchenLabel('')
+    setVerbuchenError('')
+  }
+
+  async function handleVerbuchenApply(): Promise<void> {
+    if (!verbuchenVorschlag) return
+    setVerbuchenError('')
+    setVerbuchenSaving(true)
+    try {
+      const count = await window.api.buchungen.applyVerbuchung(
+        verbuchenVorschlag.projektId,
+        verbuchenVorschlag.datum
+      )
+      setVerbuchenVorschlag(null)
+      setVerbuchenLabel('')
+      setSapMessage(t('stempel.verbuchenDone', { count }))
+      await load()
+    } catch (err) {
+      setVerbuchenError(err instanceof Error ? err.message : t('stempel.errSap'))
+    } finally {
+      setVerbuchenSaving(false)
     }
   }
 
@@ -579,6 +709,17 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
             <div className="muted">
               {t('stempel.autoPauseHint')}
             </div>
+            {pauseMinutenVerfuegbar > 0 && (
+              <div className="stempel-pause-actions">
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={openPauseAllocate}
+                >
+                  {t('stempel.allocatePause')}
+                </button>
+              </div>
+            )}
           </div>
           <div className="stempel-meta">
             {stempelLive ? (
@@ -876,9 +1017,30 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
                   >
                     <div className="auftrag-detail-inner">
                     <div className="auftrag-detail">
-                      {(projektHeuteGesamt(p) > 0 || p.heuteAbgeschlossenMinuten > 0) && (
+                      {(p.gesamtMinuten > 0 ||
+                        (p.unverbuchtMinuten ?? 0) > 0 ||
+                        projektHeuteGesamt(p) > 0 ||
+                        p.heuteAbgeschlossenMinuten > 0) && (
                         <div className={`auftrag-sap sap-${p.heuteSapStatus}`}>
                           <div className="auftrag-sap-meta">
+                            <div className="auftrag-zeit-summary" aria-label={t('stempel.totalTime')}>
+                              <span className="auftrag-sap-time">
+                                <span className="auftrag-sap-label">{t('stempel.totalTime')}</span>
+                                <strong>{formatDauer(p.gesamtMinuten)}</strong>
+                              </span>
+                              <span className="auftrag-sap-time">
+                                <span className="auftrag-sap-label">{t('stempel.bookedTime')}</span>
+                                <strong>{formatDauer(p.verbuchtMinuten ?? 0)}</strong>
+                              </span>
+                              <span className="auftrag-sap-time">
+                                <span className="auftrag-sap-label">{t('stempel.unbookedTime')}</span>
+                                <strong>
+                                  {formatDauer(
+                                    Math.max(0, p.gesamtMinuten - (p.verbuchtMinuten ?? 0))
+                                  )}
+                                </strong>
+                              </span>
+                            </div>
                             <span className="auftrag-sap-time">
                               <span className="auftrag-sap-label">{t('stempel.sapOrderToday')}</span>
                               <strong>{formatDauer(projektHeuteGesamt(p))}</strong>
@@ -917,6 +1079,22 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
                                 <IconSplit />
                               </button>
                             )}
+                            <button
+                              className="btn btn-primary btn-small"
+                              type="button"
+                              title={
+                                p.timerLaeuft && (p.unverbuchtMinuten ?? 0) <= 0
+                                  ? t('stempel.verbuchenRunningOnly')
+                                  : t('stempel.verbuchen')
+                              }
+                              disabled={(p.unverbuchtMinuten ?? 0) <= 0}
+                              onClick={() => void openVerbuchen(p)}
+                            >
+                              {t('stempel.verbuchen')}
+                              {p.verbuchungsProzent !== 100
+                                ? ` ${p.verbuchungsProzent}%`
+                                : ''}
+                            </button>
                             <button
                               className="btn btn-success btn-icon btn-small"
                               type="button"
@@ -1181,6 +1359,229 @@ export default function TodayPage({ onNeuerAuftrag }: Props) {
               : t('stempel.statusPresent')
             : t('stempel.statusOut')}
       </footer>
+
+      {showPauseAllocate && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !pauseAllocSaving) {
+              setShowPauseAllocate(false)
+            }
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pause-alloc-title"
+          >
+            <h2 id="pause-alloc-title">{t('stempel.allocatePauseTitle')}</h2>
+            <p className="muted">{t('stempel.allocatePauseHint')}</p>
+            <div className="redistribute-meta">
+              <span>
+                {t('stempel.allocatePauseAvailable')}:{' '}
+                <strong>{formatDauer(pauseMinutenVerfuegbar)}</strong>
+              </span>
+              <span>
+                {t('stempel.allocatePauseRest')}:{' '}
+                <strong>
+                  {formatDauer(Math.max(0, pauseMinutenVerfuegbar - pauseAllocUsed))}
+                </strong>
+              </span>
+            </div>
+            <div className="idle-rows">
+              {pauseAllocRows.map((row) => {
+                const others = pauseAllocRows
+                  .filter((r) => r.projektId !== row.projektId)
+                  .reduce((sum, r) => sum + r.minuten, 0)
+                const maxForRow = Math.max(0, pauseMinutenVerfuegbar - others)
+                return (
+                  <div key={row.projektId} className="idle-row">
+                    <span className="idle-row-label">{row.label}</span>
+                    <div className="idle-controls">
+                      <div className="idle-stepper">
+                        <button
+                          type="button"
+                          className="idle-step-btn minus"
+                          disabled={row.minuten <= 0}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten - 1)}
+                        >
+                          −
+                        </button>
+                        <input
+                          className="idle-step-input"
+                          type="number"
+                          min={0}
+                          max={maxForRow}
+                          value={row.minuten}
+                          onChange={(e) =>
+                            setPauseAllocMinuten(row.projektId, Number(e.target.value))
+                          }
+                          onFocus={(e) => e.target.select()}
+                        />
+                        <button
+                          type="button"
+                          className="idle-step-btn plus"
+                          disabled={row.minuten >= maxForRow}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten + 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div className="idle-step-jumps">
+                        <button
+                          type="button"
+                          className="btn btn-small idle-jump"
+                          disabled={row.minuten < 15}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten - 15)}
+                        >
+                          −15
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-small idle-jump"
+                          disabled={row.minuten < 5}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten - 5)}
+                        >
+                          −5
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-small idle-jump"
+                          disabled={row.minuten + 5 > maxForRow}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten + 5)}
+                        >
+                          +5
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-small idle-jump"
+                          disabled={row.minuten + 15 > maxForRow}
+                          onClick={() => setPauseAllocMinuten(row.projektId, row.minuten + 15)}
+                        >
+                          +15
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-small idle-jump"
+                          disabled={maxForRow <= 0}
+                          onClick={() => setPauseAllocMinuten(row.projektId, maxForRow)}
+                        >
+                          {t('idle.fillRest')}
+                        </button>
+                      </div>
+                    </div>
+                    <span className="muted idle-row-unit">{t('idle.min')}</span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="actions">
+              <button
+                type="button"
+                className="btn"
+                disabled={pauseAllocSaving}
+                onClick={() => setShowPauseAllocate(false)}
+              >
+                {t('stempel.allocatePauseCancel')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={pauseAllocSaving || pauseAllocUsed <= 0}
+                onClick={() => void handlePauseAllocateSubmit()}
+              >
+                {t('stempel.allocatePauseApply')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {verbuchenVorschlag && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !verbuchenSaving) closeVerbuchen()
+          }}
+        >
+          <div
+            className="modal-card modal-wide"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="verbuchen-title"
+          >
+            <h2 id="verbuchen-title">
+              {t('stempel.verbuchenTitle', { percent: verbuchenVorschlag.prozent })}
+            </h2>
+            <p className="muted">{verbuchenLabel}</p>
+            <p className="muted">{t('stempel.verbuchenHintAll')}</p>
+            <div className="table-wrap">
+              <table className="verbuchen-table">
+                <thead>
+                  <tr>
+                    <th>{t('stempel.verbuchenColDate')}</th>
+                    <th>{t('stempel.verbuchenColTopic')}</th>
+                    <th>{t('stempel.verbuchenColIst')}</th>
+                    <th>{t('stempel.verbuchenColSoll')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {verbuchenVorschlag.zeilen.map((z, index) => (
+                    <tr key={`${z.datum ?? 'tag'}::${z.kurztext || '__empty'}::${index}`}>
+                      <td>{formatDatumDe(z.datum)}</td>
+                      <td>{z.kurztext || t('stempel.verbuchenTopicEmpty')}</td>
+                      <td>{formatDauer(z.unverbuchtMinuten ?? 0)}</td>
+                      <td>
+                        <strong>{formatDauer(z.sollMinuten ?? 0)}</strong>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  {sumVerbuchungByKurztext(verbuchenVorschlag.zeilen).map((s) => (
+                    <tr key={`sum::${s.kurztext || '__empty'}`} className="verbuchen-sum-row">
+                      <td colSpan={2}>
+                        {t('stempel.verbuchenSumTopic', {
+                          topic: s.kurztext || t('stempel.verbuchenTopicEmpty')
+                        })}
+                      </td>
+                      <td>{formatDauer(s.unverbuchtMinuten)}</td>
+                      <td>
+                        <strong>{formatDauer(s.sollMinuten)}</strong>
+                      </td>
+                    </tr>
+                  ))}
+                </tfoot>
+              </table>
+            </div>
+            {verbuchenError && <p className="error">{verbuchenError}</p>}
+            <div className="actions">
+              <button
+                type="button"
+                className="btn"
+                disabled={verbuchenSaving}
+                onClick={closeVerbuchen}
+              >
+                {t('stempel.verbuchenCancel')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={
+                  verbuchenSaving ||
+                  verbuchenVorschlag.zeilen.every((z) => (z.allocations?.length ?? 0) === 0)
+                }
+                onClick={() => void handleVerbuchenApply()}
+              >
+                {t('stempel.verbuchenApply')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

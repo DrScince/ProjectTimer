@@ -45,4 +45,11 @@ for (const name of requiredExternal) {
   }
 }
 
+if (/#standard-fonts\//.test(src)) {
+  console.error(
+    '[verify-main-bundle] FAIL – unresolved pdfkit import "#standard-fonts/…" im Bundle (PDF-Export kaputt).'
+  )
+  process.exit(1)
+}
+
 console.log('[verify-main-bundle] OK – keine verbotenen externen Requires')

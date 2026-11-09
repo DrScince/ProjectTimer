@@ -6,8 +6,10 @@ export function heuteIso(): string {
   return `${y}-${m}-${d}`
 }
 
-export function formatDatumDe(iso: string): string {
+export function formatDatumDe(iso: string | null | undefined): string {
+  if (!iso || typeof iso !== 'string') return '–'
   const [y, m, d] = iso.split('-')
+  if (!y || !m || !d) return iso
   return `${d}.${m}.${y}`
 }
 
@@ -26,10 +28,74 @@ export function formatDateTimeLocal(iso: string | null | undefined, locale = 'de
 }
 
 export function formatDauer(minuten: number): string {
-  const total = Math.max(0, Math.round(minuten))
+  const total = Math.max(0, Math.round(Number(minuten) || 0))
   const h = Math.floor(total / 60)
   const m = total % 60
   return `${h}:${String(m).padStart(2, '0')} h`
+}
+
+/** Offene (noch nicht verbuchte) Minuten einer Buchung. */
+export function sapOffenMinuten(b: {
+  dauerMinuten: number | null
+  sapVerbuchtMinuten?: number | null
+}): number {
+  const dauer = Math.max(0, b.dauerMinuten ?? 0)
+  const verbucht = Math.max(0, b.sapVerbuchtMinuten ?? 0)
+  return Math.max(0, dauer - verbucht)
+}
+
+export function istBuchungVollVerbucht(b: {
+  dauerMinuten: number | null
+  sapVerbuchtMinuten?: number | null
+  sapUeberfuehrtAm?: string | null
+}): boolean {
+  const dauer = Math.max(0, b.dauerMinuten ?? 0)
+  if (dauer <= 0) return Boolean(b.sapUeberfuehrtAm)
+  return Math.max(0, b.sapVerbuchtMinuten ?? 0) >= dauer
+}
+
+export function istBuchungTeilweiseVerbucht(b: {
+  dauerMinuten: number | null
+  sapVerbuchtMinuten?: number | null
+  sapUeberfuehrtAm?: string | null
+}): boolean {
+  const verbucht = Math.max(0, b.sapVerbuchtMinuten ?? 0)
+  return verbucht > 0 && !istBuchungVollVerbucht(b)
+}
+
+/** Summen der Verbuchen-Zeilen je Kurztext (über alle Tage). */
+export function sumVerbuchungByKurztext(
+  zeilen: Array<{
+    kurztext: string
+    unverbuchtMinuten: number
+    sollMinuten: number
+    markierbarMinuten: number
+  }>
+): Array<{
+  kurztext: string
+  unverbuchtMinuten: number
+  sollMinuten: number
+  markierbarMinuten: number
+}> {
+  const map = new Map<
+    string,
+    { unverbuchtMinuten: number; sollMinuten: number; markierbarMinuten: number }
+  >()
+  for (const z of zeilen) {
+    const key = (z.kurztext ?? '').trim()
+    const cur = map.get(key) ?? {
+      unverbuchtMinuten: 0,
+      sollMinuten: 0,
+      markierbarMinuten: 0
+    }
+    cur.unverbuchtMinuten += z.unverbuchtMinuten ?? 0
+    cur.sollMinuten += z.sollMinuten ?? 0
+    cur.markierbarMinuten += z.markierbarMinuten ?? 0
+    map.set(key, cur)
+  }
+  return Array.from(map.entries())
+    .map(([kurztext, sums]) => ({ kurztext, ...sums }))
+    .sort((a, b) => a.kurztext.localeCompare(b.kurztext, 'de'))
 }
 
 export function formatSekunden(sekunden: number): string {

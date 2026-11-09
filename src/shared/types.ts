@@ -36,6 +36,11 @@ export interface Projekt {
   empfaengerArt: EmpfaengerArt
   empfaenger: string
   leistungsart: string
+  /**
+   * Anteil der getrackten Zeit, der verbucht werden soll (z. B. 80).
+   * Default 100.
+   */
+  verbuchungsProzent: number
   aktiv: boolean
   /** Anzeigereihenfolge (kleiner = weiter oben) */
   sortOrder: number
@@ -51,7 +56,37 @@ export interface ProjektInput {
   empfaengerArt: EmpfaengerArt
   empfaenger: string
   leistungsart: string
+  /** 1–200, Default 100 */
+  verbuchungsProzent?: number
   aktiv?: boolean
+}
+
+export interface VerbuchungsAllocation {
+  buchungId: number
+  /** Minuten, die bei dieser Buchung zusätzlich verbucht werden */
+  minuten: number
+}
+
+export interface VerbuchungsVorschlagZeile {
+  /** Kalendertag der Buchungen */
+  datum: string
+  kurztext: string
+  unverbuchtMinuten: number
+  /** Soll-Eintrag = Unverbucht × % (und = Summe der Teilverbuchungen) */
+  sollMinuten: number
+  /** Entspricht sollMinuten (Teilbuchungen erlaubt) */
+  markierbarMinuten: number
+  allocations: VerbuchungsAllocation[]
+}
+
+export interface VerbuchungsVorschlag {
+  projektId: number
+  /**
+   * Eingeschränkter Tag, oder null = alle Tage mit unverbuchten Buchungen.
+   */
+  datum: string | null
+  prozent: number
+  zeilen: VerbuchungsVorschlagZeile[]
 }
 
 export interface Zeitbuchung {
@@ -65,8 +100,27 @@ export interface Zeitbuchung {
   notiz: string
   quelle: BuchungQuelle
   erstelltAm: string
-  /** ISO-Zeitpunkt der SAP-Überführung; null = noch nicht überführt */
+  /** ISO-Zeitpunkt der (letzten) SAP-Überführung; null = noch nichts verbucht */
   sapUeberfuehrtAm: string | null
+  /**
+   * Bereits verbuchte Minuten dieser Buchung (Teilverbuchung möglich).
+   * 0 = nichts verbucht; bei voller Verbuchung = dauerMinuten.
+   */
+  sapVerbuchtMinuten: number
+  /**
+   * Soft-Delete: Original (z. B. getrackt) bleibt sichtbar, zählt aber nicht mehr.
+   * Nachträgliche Korrekturen legen stattdessen Dauer-Buchungen ohne Uhrzeit an.
+   */
+  geloeschtAm: string | null
+}
+
+export interface BuchungAdjustInput {
+  projektId: number
+  notiz?: string
+  /** Minuten, die am Auftrag bleiben (Rest der Originaldauer → Pause) */
+  behaltenMinuten: number
+  /** Zusätzliche Minuten aus der Pause auf diesen Auftrag */
+  ausPauseMinuten?: number
 }
 
 export interface ZeitbuchungMitProjekt extends Zeitbuchung {
@@ -199,6 +253,22 @@ export interface AnwesenheitTagSumme {
   stempelMinuten: number
 }
 
+/** Nachträgliche Korrektur von Kommen/Gehen/Pause für einen Kalendertag */
+export interface AnwesenheitUpdateInput {
+  /** HH:mm oder HH:mm:ss */
+  kommenZeit: string
+  /** HH:mm oder HH:mm:ss; null = Sitzung offen lassen (nur heute) */
+  gehenZeit: string | null
+  pausenMinuten: number
+}
+
+/** Pause nachträglich auf Aufträge umbuchen */
+export interface PauseAllocateInput {
+  projektId: number
+  minuten: number
+  notiz?: string
+}
+
 /** Tages-Topic unter einem Auftrag (Kurztext mit eigener Zeit) */
 export interface TagesThema {
   projektId: number
@@ -218,12 +288,21 @@ export interface TopicVerteilung {
 }
 
 export interface ProjektMitZeit extends Projekt {
-  /** Gesamte gebuchte Zeit auf den Auftrag (alle Tage) */
+  /** Gesamte getrackte Zeit auf den Auftrag (alle Tage, inkl. laufendem Timer) */
   gesamtMinuten: number
-  /** Heute auf den Auftrag gebuchte Zeit */
+  /** Heute auf den Auftrag getrackte Zeit */
   heuteMinuten: number
   /** Abgeschlossene Minuten heute (ohne laufenden Timer) – relevant für SAP */
   heuteAbgeschlossenMinuten: number
+  /**
+   * Bereits in SAP verbuchte Minuten über alle Tage (Teilverbuchung summiert).
+   */
+  verbuchtMinuten: number
+  /**
+   * Abgeschlossene, noch nicht SAP-markierte Minuten über alle Tage
+   * (ohne laufenden Timer) – für Verbuchen-Button.
+   */
+  unverbuchtMinuten: number
   /** SAP-Status der abgeschlossenen heutigen Buchungen dieses Auftrags */
   heuteSapStatus: SapTransferStatus | 'leer'
   /** Letzter SAP-Überführungszeitpunkt der heutigen Buchungen */
@@ -256,6 +335,7 @@ export interface ProjektExport {
     empfaengerArt: EmpfaengerArt
     empfaenger: string
     leistungsart: string
+    verbuchungsProzent: number
     aktiv: boolean
   }>
 }
@@ -285,6 +365,10 @@ export interface CsvVorschauZeile {
   personalnummer: string
   datum: string
   stunden: string
+  /** Bereits in SAP verbuchte Zeit (hh:mm:ss), Teilverbuchung summiert */
+  stundenVerbucht: string
+  /** Noch nicht verbuchte Zeit (hh:mm:ss) */
+  stundenUnverbucht: string
   auftragsnummer: string
   arbeitsplatz: string
   projektKuerzel: string
@@ -313,6 +397,8 @@ export const DEFAULT_CSV_SPALTEN = [
   'personalnummer',
   'datum',
   'stunden',
+  'stundenVerbucht',
+  'stundenUnverbucht',
   'auftragsnummer',
   'arbeitsplatz',
   'projektKuerzel',
@@ -324,6 +410,8 @@ export const CSV_SPALTEN_LABELS: Record<string, string> = {
   personalnummer: 'Personalnummer',
   datum: 'Datum',
   stunden: 'Stunden',
+  stundenVerbucht: 'Verbucht',
+  stundenUnverbucht: 'Unverbucht',
   auftragsnummer: 'Auftragsnummer',
   arbeitsplatz: 'Arbeitsplatz',
   projektKuerzel: 'Projektkürzel',
