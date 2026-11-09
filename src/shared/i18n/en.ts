@@ -290,7 +290,7 @@ export const en: Record<MessageKey, string> = {
     'If there is no attendance yet today, the app checks in automatically on startup. After a same-day restart it will not check in again.',
   'settings.autoGehen': 'Provisional check-out on shutdown',
   'settings.autoGehenHint':
-    'On shutdown/restart, check-out is applied. If the PC starts again the same day (e.g. update), check-out is undone and the session continues. If the PC stays off until the next day, check-out remains.',
+    'On shutdown/quit, check-out is applied. If the PC starts again the same day, check-out is undone. If the PC stays off until the next day (or shutdown was missed), the session is closed on the previous day – not at the next start.',
   'settings.autoStart': 'Start with Windows (autostart)',
   'settings.autoStartHint':
     'Starts ProjectTimer automatically after sign-in (background/tray) so auto check-in can run.',

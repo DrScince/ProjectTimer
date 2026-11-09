@@ -77,7 +77,8 @@ export function initDatabase(): void {
       kommen_am TEXT NOT NULL,
       gehen_am TEXT,
       pause_seit TEXT,
-      pausen_minuten INTEGER NOT NULL DEFAULT 0
+      pausen_minuten INTEGER NOT NULL DEFAULT 0,
+      last_seen_am TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tages_themen (
@@ -134,6 +135,15 @@ function migrateSchema(): void {
     if (!buchungNames.has('sap_ueberfuehrt_am')) {
       database.exec(`ALTER TABLE zeitbuchungen ADD COLUMN sap_ueberfuehrt_am TEXT`)
       console.log('[ProjectTimer] Migration: Spalte sap_ueberfuehrt_am hinzugefügt')
+    }
+
+    const anwCols = database
+      .prepare('PRAGMA table_info(anwesenheit)')
+      .all() as Array<{ name: string }>
+    const anwNames = new Set(anwCols.map((c) => c.name))
+    if (!anwNames.has('last_seen_am')) {
+      database.exec(`ALTER TABLE anwesenheit ADD COLUMN last_seen_am TEXT`)
+      console.log('[ProjectTimer] Migration: Spalte anwesenheit.last_seen_am hinzugefügt')
     }
   } catch (err) {
     console.error('[ProjectTimer] Schema-Migration fehlgeschlagen:', err)
@@ -812,10 +822,10 @@ export function kommen(): Anwesenheit {
     getDb()
       .prepare(
         `UPDATE anwesenheit
-         SET gehen_am = NULL, pause_seit = ?, pausen_minuten = ?
+         SET gehen_am = NULL, pause_seit = ?, pausen_minuten = ?, last_seen_am = ?
          WHERE id = ?`
       )
-      .run(jetzt, pausenMinuten, heutige.id)
+      .run(jetzt, pausenMinuten, jetzt, heutige.id)
 
     const row = getDb()
       .prepare('SELECT * FROM anwesenheit WHERE id = ?')
@@ -825,17 +835,88 @@ export function kommen(): Anwesenheit {
 
   const result = getDb()
     .prepare(
-      `INSERT INTO anwesenheit (kommen_am, gehen_am, pause_seit, pausen_minuten)
-       VALUES (?, NULL, ?, 0)`
+      `INSERT INTO anwesenheit (kommen_am, gehen_am, pause_seit, pausen_minuten, last_seen_am)
+       VALUES (?, NULL, ?, 0, ?)`
     )
-    .run(jetzt, jetzt)
+    .run(jetzt, jetzt, jetzt)
   const row = getDb()
     .prepare('SELECT * FROM anwesenheit WHERE id = ?')
     .get(result.lastInsertRowid) as Record<string, unknown>
   return mapAnwesenheit(row, jetztDate)
 }
 
-export function gehen(): Anwesenheit {
+function endOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999)
+}
+
+/** Letzte sinnvolle Gehen-Zeit für einen Kommen-Tag (Heartbeat, letzte Buchung, sonst 23:59). */
+function inferGehenAmForKommenTag(kommenAm: string, lastSeenAm: string | null): Date {
+  const kommenDate = new Date(kommenAm)
+  const tag = formatDate(kommenDate)
+  const dayEnd = endOfLocalDay(kommenDate)
+
+  let best: Date | null = null
+
+  if (lastSeenAm) {
+    const seen = new Date(lastSeenAm)
+    if (formatDate(seen) === tag && seen.getTime() >= kommenDate.getTime()) {
+      best = seen
+    }
+  }
+
+  const buchungen = getDb()
+    .prepare(
+      `SELECT start_zeit, ende_zeit, dauer_minuten FROM zeitbuchungen WHERE datum = ?`
+    )
+    .all(tag) as Array<{
+    start_zeit: string | null
+    ende_zeit: string | null
+    dauer_minuten: number | null
+  }>
+
+  for (const b of buchungen) {
+    let endLocal: Date | null = null
+    if (b.ende_zeit && /^\d{2}:\d{2}/.test(b.ende_zeit)) {
+      const [hh, mm, ss] = b.ende_zeit.split(':').map((x) => Number(x) || 0)
+      endLocal = new Date(
+        kommenDate.getFullYear(),
+        kommenDate.getMonth(),
+        kommenDate.getDate(),
+        hh,
+        mm,
+        ss || 0
+      )
+    } else if (b.start_zeit && b.dauer_minuten != null) {
+      const [hh, mm, ss] = b.start_zeit.split(':').map((x) => Number(x) || 0)
+      const startLocal = new Date(
+        kommenDate.getFullYear(),
+        kommenDate.getMonth(),
+        kommenDate.getDate(),
+        hh,
+        mm,
+        ss || 0
+      )
+      endLocal = new Date(startLocal.getTime() + Number(b.dauer_minuten) * 60_000)
+    }
+    if (endLocal && (!best || endLocal.getTime() > best.getTime())) {
+      best = endLocal
+    }
+  }
+
+  if (!best || best.getTime() < kommenDate.getTime()) {
+    return dayEnd
+  }
+  if (best.getTime() > dayEnd.getTime()) {
+    return dayEnd
+  }
+  return best
+}
+
+/**
+ * Schließt die offene Anwesenheit zum angegebenen Zeitpunkt (ISO/local Date).
+ * Standard: jetzt (manuelles Gehen).
+ */
+export function gehen(at?: Date): Anwesenheit {
   const offen = getOffeneAnwesenheitRow()
   if (!offen) {
     throw new Error(t('err.noOpenCheckIn'))
@@ -849,29 +930,92 @@ export function gehen(): Anwesenheit {
     throw new Error(t('err.attendanceNotFound'))
   }
 
+  const gehenDate = at ?? new Date()
+  const gehenMs = gehenDate.getTime()
+  const kommenMs = new Date(aktuell.kommen_am as string).getTime()
+  const cappedGehen = new Date(Math.max(kommenMs, gehenMs))
+
   let pausenMinuten = Number(aktuell.pausen_minuten ?? 0)
   const pauseSeit = aktuell.pause_seit as string | null
   if (pauseSeit) {
-    const extra = Math.max(
-      0,
-      Math.round((Date.now() - new Date(pauseSeit).getTime()) / 60000)
-    )
+    const pauseStart = new Date(pauseSeit).getTime()
+    const extra = Math.max(0, Math.round((cappedGehen.getTime() - pauseStart) / 60000))
     pausenMinuten += extra
   }
 
-  const gehenAm = new Date().toISOString()
+  const gehenAm = cappedGehen.toISOString()
   getDb()
     .prepare(
       `UPDATE anwesenheit
-       SET gehen_am = ?, pause_seit = NULL, pausen_minuten = ?
+       SET gehen_am = ?, pause_seit = NULL, pausen_minuten = ?, last_seen_am = COALESCE(last_seen_am, ?)
        WHERE id = ?`
     )
-    .run(gehenAm, pausenMinuten, aktuell.id)
+    .run(gehenAm, pausenMinuten, gehenAm, aktuell.id)
 
   const row = getDb()
     .prepare('SELECT * FROM anwesenheit WHERE id = ?')
     .get(aktuell.id) as Record<string, unknown>
-  return mapAnwesenheit(row)
+  return mapAnwesenheit(row, cappedGehen)
+}
+
+/** Heartbeat: merkt letzte Lebenszeichen-Zeit der offenen Sitzung (für Crash/Shutdown). */
+export function touchAnwesenheitLastSeen(jetzt = new Date()): void {
+  const offen = getOffeneAnwesenheitRow()
+  if (!offen) return
+  getDb()
+    .prepare('UPDATE anwesenheit SET last_seen_am = ? WHERE id = ? AND gehen_am IS NULL')
+    .run(jetzt.toISOString(), offen.id)
+}
+
+/**
+ * Offene Sitzung von einem früheren Kalendertag schließen (nicht mit „jetzt“!).
+ * Verhindert 65h-Anwesenheit nach Wochenende ohne Shutdown-Gehen.
+ */
+export function closeStaleOpenAnwesenheit(jetzt = new Date()): Anwesenheit | null {
+  const offen = getOffeneAnwesenheitRow()
+  if (!offen) return null
+
+  const kommenAm = offen.kommen_am as string
+  const kommenTag = formatDate(new Date(kommenAm))
+  const heute = formatDate(jetzt)
+  if (kommenTag >= heute) return null
+
+  const lastSeen = (offen.last_seen_am as string | null) ?? null
+  const gehenAt = inferGehenAmForKommenTag(kommenAm, lastSeen)
+  console.log(
+    `[ProjectTimer] Stale Anwesenheit geschlossen: kommen=${kommenTag} gehen=${gehenAt.toISOString()}`
+  )
+  return gehen(gehenAt)
+}
+
+/**
+ * Repariert bereits gespeicherte Sitzungen, die über Mitternacht hinaus geschlossen wurden
+ * (typisch: Shutdown-Gehen fehlte, Gehen erst beim nächsten Start).
+ */
+export function repairCrossDayAnwesenheit(): number {
+  const rows = getDb()
+    .prepare(`SELECT * FROM anwesenheit WHERE gehen_am IS NOT NULL`)
+    .all() as Array<Record<string, unknown>>
+
+  let fixed = 0
+  for (const row of rows) {
+    const kommenAm = row.kommen_am as string
+    const gehenAm = row.gehen_am as string
+    const kommenTag = formatDate(new Date(kommenAm))
+    const gehenTag = formatDate(new Date(gehenAm))
+    if (gehenTag <= kommenTag) continue
+
+    const lastSeen = (row.last_seen_am as string | null) ?? null
+    const corrected = inferGehenAmForKommenTag(kommenAm, lastSeen)
+    getDb()
+      .prepare('UPDATE anwesenheit SET gehen_am = ? WHERE id = ?')
+      .run(corrected.toISOString(), row.id)
+    fixed += 1
+    console.log(
+      `[ProjectTimer] Anwesenheit #${row.id} korrigiert: ${gehenAm} → ${corrected.toISOString()}`
+    )
+  }
+  return fixed
 }
 
 export type ShutdownGehenMarker = {
@@ -941,10 +1085,10 @@ export function reopenAnwesenheitAfterRestart(
   getDb()
     .prepare(
       `UPDATE anwesenheit
-       SET gehen_am = NULL, pausen_minuten = ?, pause_seit = ?
+       SET gehen_am = NULL, pausen_minuten = ?, pause_seit = ?, last_seen_am = ?
        WHERE id = ?`
     )
-    .run(pausenMinuten, pauseSeit, anwesenheitId)
+    .run(pausenMinuten, pauseSeit, pauseSeit, anwesenheitId)
 
   clearShutdownGehenMarker()
 

@@ -63,7 +63,10 @@ import {
 import {
   applyAutoStartSetting,
   runStartupStempel,
-  startAutoGehenOnShutdown
+  startAnwesenheitHeartbeat,
+  startAutoGehenOnShutdown,
+  stopAnwesenheitHeartbeat,
+  tryAutoGehenOnShutdown
 } from './autoStempel'
 import {
   getUpdateInfo,
@@ -542,19 +545,27 @@ app.whenReady().then(() => {
     return
   }
 
+  // Zuerst Anwesenheit reparieren/schließen – bevor UI Daten lädt
+  startAutoGehenOnShutdown()
+  applyAutoStartSetting()
+  const startup = runStartupStempel()
+
   createWindow()
   createTray(() => mainWindow)
   updateTrayMenu()
   syncFloatingBar()
   startIdleMonitor(() => mainWindow)
-  startAutoGehenOnShutdown()
-  applyAutoStartSetting()
 
-  const startup = runStartupStempel()
-  if (startup.restartedSession || startup.autoKommen) {
+  if (
+    startup.restartedSession ||
+    startup.autoKommen ||
+    startup.closedStale ||
+    startup.repairedSessions > 0
+  ) {
     broadcastStatusChanged()
   }
 
+  startAnwesenheitHeartbeat()
   startAutoUpdater(() => mainWindow)
 
   app.on('activate', () => {
@@ -568,8 +579,14 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   setQuitting(true)
-  // Falls Shutdown-Event nicht greift: offene Sitzung beim Beenden schließen
-  // (nur wenn Auto-Gehen aktiv – Tray-Quit mit laufendem Tag bleibt manuell)
+  stopAnwesenheitHeartbeat()
+  // System-Shutdown: powerMonitor greift oft nicht rechtzeitig – hier nochmals versuchen.
+  // Tray-Quit am selben Tag: tryAutoGehen setzt Marker; Restart am selben Tag nimmt Gehen zurück.
+  try {
+    tryAutoGehenOnShutdown()
+  } catch {
+    /* ignore */
+  }
   stopIdleMonitor()
   destroyFloatingBar()
   destroyTray()

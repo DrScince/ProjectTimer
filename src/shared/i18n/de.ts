@@ -288,7 +288,7 @@ export const de = {
     'Wenn heute noch keine Stempelung existiert, wird beim App-Start automatisch gekommen. Nach einem Neustart am selben Tag wird nicht erneut gekommen.',
   'settings.autoGehen': 'Beim Herunterfahren vorläufig „Gehen“',
   'settings.autoGehenHint':
-    'Bei Shutdown/Neustart wird Gehen gesetzt. Startet der PC am selben Tag wieder (z. B. Update), wird Gehen zurückgenommen und die Sitzung fortgesetzt. Bleibt der PC aus bis zum nächsten Tag, bleibt Gehen bestehen.',
+    'Bei Shutdown/Beenden wird Gehen gesetzt. Startet der PC am selben Tag wieder, wird Gehen zurückgenommen. Bleibt der PC bis zum nächsten Tag aus (oder Shutdown greift nicht), wird die Sitzung am Vortag geschlossen – nicht erst beim nächsten Start.',
   'settings.autoStart': 'Mit Windows starten (Autostart)',
   'settings.autoStartHint':
     'Startet ProjectTimer nach dem Anmelden automatisch (im Hintergrund/Tray), damit Auto-Kommen greifen kann.',

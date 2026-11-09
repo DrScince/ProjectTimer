@@ -23,6 +23,11 @@ exports.default = async function afterPack(context) {
     return
   }
 
-  await rcedit(exePath, { icon: iconPath })
-  console.log('[afterPack] Icon gesetzt:', exeName)
+  try {
+    await rcedit(exePath, { icon: iconPath })
+    console.log('[afterPack] Icon gesetzt:', exeName)
+  } catch (err) {
+    // Oft: EXE noch gesperrt (laufende Instanz). Build soll trotzdem weiterlaufen.
+    console.warn('[afterPack] Icon konnte nicht gesetzt werden:', err?.message || err)
+  }
 }

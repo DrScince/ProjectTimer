@@ -4,7 +4,7 @@
 
 ![Erfassung](docs/screenshots/01-erfassung.png)
 
-Lizenz: [MIT](LICENSE) · Version: **1.0.3** · Platform: **Windows**
+Lizenz: [MIT](LICENSE) · Version: **1.0.4** · Platform: **Windows**
 
 ---
 

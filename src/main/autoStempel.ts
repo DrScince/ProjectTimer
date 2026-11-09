@@ -1,6 +1,7 @@
 import { app, powerMonitor } from 'electron'
 import {
   clearShutdownGehenMarker,
+  closeStaleOpenAnwesenheit,
   formatDate,
   gehen,
   getAnwesenheit,
@@ -8,15 +9,20 @@ import {
   getShutdownGehenMarker,
   kommen,
   reopenAnwesenheitAfterRestart,
-  setShutdownGehenMarker
+  repairCrossDayAnwesenheit,
+  setShutdownGehenMarker,
+  touchAnwesenheitLastSeen
 } from './database'
 import type { Anwesenheit, Einstellungen } from '../shared/types'
 
 let shutdownHooked = false
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 export type StartupStempelResult = {
   restartedSession: boolean
   autoKommen: Anwesenheit | null
+  repairedSessions: number
+  closedStale: boolean
 }
 
 /**
@@ -61,9 +67,9 @@ export function tryAutoKommenHeute(): Anwesenheit | null {
   if (aktuell?.istOffen) {
     const kommenTag = formatDate(new Date(aktuell.kommenAm))
     if (kommenTag < heute) {
-      // Offene Sitzung vom Vortag ohne Shutdown-Marker → schließen, dann neu kommen
+      // Offene Sitzung vom Vortag → am Vortag schließen (nicht mit „jetzt“!)
       try {
-        gehen()
+        closeStaleOpenAnwesenheit()
       } catch (err) {
         console.warn('[ProjectTimer] Auto-Gehen (Vortag) fehlgeschlagen:', err)
         return null
@@ -84,13 +90,26 @@ export function tryAutoKommenHeute(): Anwesenheit | null {
   }
 }
 
-/** Startsequenz: Restart-Gehen auflösen, danach ggf. Auto-Kommen */
+/** Startsequenz: Daten reparieren, Restart-Gehen auflösen, Stale schließen, ggf. Auto-Kommen */
 export function runStartupStempel(): StartupStempelResult {
+  const repairedSessions = repairCrossDayAnwesenheit()
+  if (repairedSessions > 0) {
+    console.log(`[ProjectTimer] ${repairedSessions} Anwesenheits-Sitzung(en) über Tagesgrenze korrigiert`)
+  }
+
   const restartedSession = resolvePendingShutdownGehen()
   if (restartedSession) {
-    return { restartedSession: true, autoKommen: null }
+    return { restartedSession: true, autoKommen: null, repairedSessions, closedStale: false }
   }
-  return { restartedSession: false, autoKommen: tryAutoKommenHeute() }
+
+  const stale = closeStaleOpenAnwesenheit()
+  const closedStale = Boolean(stale)
+  return {
+    restartedSession: false,
+    autoKommen: tryAutoKommenHeute(),
+    repairedSessions,
+    closedStale
+  }
 }
 
 /**
@@ -105,6 +124,7 @@ export function tryAutoGehenOnShutdown(): Anwesenheit | null {
   if (!heute?.istOffen) return null
 
   try {
+    touchAnwesenheitLastSeen()
     const closed = gehen()
     if (closed.gehenAm) {
       setShutdownGehenMarker({
@@ -119,12 +139,49 @@ export function tryAutoGehenOnShutdown(): Anwesenheit | null {
   }
 }
 
+export function startAnwesenheitHeartbeat(): void {
+  if (heartbeatTimer) return
+  touchAnwesenheitLastSeen()
+  heartbeatTimer = setInterval(() => {
+    try {
+      touchAnwesenheitLastSeen()
+    } catch (err) {
+      console.warn('[ProjectTimer] Anwesenheit-Heartbeat fehlgeschlagen:', err)
+    }
+  }, 60_000)
+  // Timer darf Electron am Beenden nicht blockieren
+  if (typeof heartbeatTimer === 'object' && 'unref' in heartbeatTimer) {
+    heartbeatTimer.unref?.()
+  }
+}
+
+export function stopAnwesenheitHeartbeat(): void {
+  if (!heartbeatTimer) return
+  clearInterval(heartbeatTimer)
+  heartbeatTimer = null
+  try {
+    touchAnwesenheitLastSeen()
+  } catch {
+    /* ignore */
+  }
+}
+
 export function startAutoGehenOnShutdown(): void {
   if (shutdownHooked) return
   shutdownHooked = true
 
+  // Windows: shutdown ist oft zu kurz – zusätzlich Heartbeat + Startup-Repair
   powerMonitor.on('shutdown', () => {
     tryAutoGehenOnShutdown()
+  })
+
+  // Suspend/Hibernate: zumindest Last-Seen setzen (kein Gehen – Nutzer kommt oft zurück)
+  powerMonitor.on('suspend', () => {
+    try {
+      touchAnwesenheitLastSeen()
+    } catch {
+      /* ignore */
+    }
   })
 }
 
@@ -135,7 +192,7 @@ export function applyAutoStartSetting(settings?: Einstellungen): void {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       openAsHidden: true,
-      path: process.execPath,
+      path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath,
       args: []
     })
   } catch (err) {
