@@ -496,6 +496,11 @@ export function istBuchungAbgeschlossen(buchung: Zeitbuchung): boolean {
   return false
 }
 
+/** Für SAP-Status/Verbuchung: aktiv, abgeschlossen und mit Dauer > 0. */
+export function istBuchungSapRelevant(buchung: Zeitbuchung): boolean {
+  return istBuchungAbgeschlossen(buchung) && buchungDauerMinuten(buchung) > 0
+}
+
 export function markBuchungenSapUeberfuehrt(
   ids: number[],
   am: string = new Date().toISOString()
@@ -566,7 +571,7 @@ function sapStatusFromBuchungen(
 }
 
 export function getSapTagesStatus(datum: string): SapTagesStatus {
-  const buchungen = listBuchungenByDatum(datum).filter(istBuchungAbgeschlossen)
+  const buchungen = listBuchungenByDatum(datum).filter(istBuchungSapRelevant)
   const offen = buchungen.filter((b) => sapOffenMinuten(b) > 0).length
   const ueberfuehrt = buchungen.filter((b) => istBuchungVollVerbucht(b)).length
   const { status, zuletztUeberfuehrtAm } = sapStatusFromBuchungen(buchungen)
@@ -1538,6 +1543,7 @@ function buildThemenFuerProjekt(
   const themen: TagesThema[] = []
   for (const [kurztext, items] of Array.from(groups.entries())) {
     const completed = items.filter(istBuchungAbgeschlossen)
+    const sapRelevant = completed.filter(istBuchungSapRelevant)
     const abgeschlossen = completed.reduce(
       (sum: number, b: ZeitbuchungMitProjekt) => sum + (b.dauerMinuten ?? 0),
       0
@@ -1551,7 +1557,7 @@ function buildThemenFuerProjekt(
     if (running && laufend) {
       minuten += laufendeTimerMinuten(laufend)
     }
-    const sap = sapStatusFromBuchungen(completed)
+    const sap = sapStatusFromBuchungen(sapRelevant)
     themen.push({
       projektId,
       kurztext,
@@ -1777,6 +1783,7 @@ export function listProjekteMitZeiten(): ProjektMitZeit[] {
   const heuteAbgeschlossen = alleHeute.filter(istBuchungAbgeschlossen)
   const sapByProjekt = new Map<number, Zeitbuchung[]>()
   for (const b of heuteAbgeschlossen) {
+    if (!istBuchungSapRelevant(b)) continue
     const list = sapByProjekt.get(b.projektId) ?? []
     list.push(b)
     sapByProjekt.set(b.projektId, list)

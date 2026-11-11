@@ -63,6 +63,21 @@ export function istBuchungTeilweiseVerbucht(b: {
   return verbucht > 0 && !istBuchungVollVerbucht(b)
 }
 
+/** Für SAP-Status: nur Buchungen mit Dauer > 0 (0-Minuten und gelöschte zählen nicht). */
+export function istBuchungSapRelevant(b: {
+  dauerMinuten: number | null
+  geloeschtAm?: string | null
+  endeZeit?: string | null
+  quelle?: string
+}): boolean {
+  if (b.geloeschtAm) return false
+  const dauer = Math.max(0, b.dauerMinuten ?? 0)
+  if (dauer <= 0) return false
+  return (
+    b.endeZeit != null || (b.quelle === 'manuell' && dauer > 0)
+  )
+}
+
 /** Summen der Verbuchen-Zeilen je Kurztext (über alle Tage). */
 export function sumVerbuchungByKurztext(
   zeilen: Array<{

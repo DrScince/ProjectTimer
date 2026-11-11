@@ -386,7 +386,7 @@ export const en: Record<MessageKey, string> = {
   'float.openApp': 'Double-click opens the app',
   'float.drag': 'Drag to move',
   'float.slideoutPeek': 'Hover here to expand the bar',
-  'float.timerTitle': 'Current order runtime · double-click opens app',
+  'float.timerTitle': 'Today’s time continuing · double-click opens app',
   'float.selectOrder': 'Select order / topic',
   'float.totalTime': 'Total',
   'float.todayTime': 'Today',

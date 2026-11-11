@@ -11,7 +11,10 @@ type TopicOption = {
   kuerzel: string
   subtitle: string
   label: string
+  /** Heute inkl. laufendem Timer (Minuten, für Labels) */
   heuteMinuten: number
+  /** Heute ohne laufenden Timer – Basis für fortlaufende Anzeige */
+  heuteAbgeschlossenMinuten: number
   gesamtMinuten: number
   timerLaeuft: boolean
 }
@@ -37,6 +40,7 @@ function buildTopicOptions(projekte: ProjektMitZeit[]): TopicOption[] {
       subtitle: p.name,
       label: `${p.auftragsnummer ? `${p.auftragsnummer} · ` : ''}${p.kuerzel} – ${p.name}`,
       heuteMinuten: p.heuteMinuten,
+      heuteAbgeschlossenMinuten: p.heuteAbgeschlossenMinuten,
       gesamtMinuten: p.gesamtMinuten,
       timerLaeuft: orderRunning
     })
@@ -51,6 +55,7 @@ function buildTopicOptions(projekte: ProjektMitZeit[]): TopicOption[] {
         subtitle: thema.kurztext,
         label: `${p.auftragsnummer ? `${p.auftragsnummer} · ` : ''}${p.kuerzel} – ${thema.kurztext}`,
         heuteMinuten: thema.heuteMinuten,
+        heuteAbgeschlossenMinuten: thema.heuteAbgeschlossenMinuten,
         gesamtMinuten: p.gesamtMinuten,
         timerLaeuft: thema.timerLaeuft
       })
@@ -132,7 +137,7 @@ export default function FloatingBar() {
   const isVertical = isSlideout && (layout.edge === 'left' || layout.edge === 'right')
   const isCollapsed = isSlideout && !layout.expanded
 
-  const liveSekunden = useMemo(() => {
+  const sessionSekunden = useMemo(() => {
     if (!laufend?.startZeit) return 0
     return laufendeSekunden(laufend.startZeit, now)
   }, [laufend, now])
@@ -149,6 +154,16 @@ export default function FloatingBar() {
     }
     return topicOptions.find((o) => o.key === selectedKey) ?? topicOptions[0] ?? null
   }, [topicOptions, selectedKey, laufend])
+
+  /** Anzeige: heutige Zeit fortlaufend (DB speichert weiter einzelne Blöcke). */
+  const anzeigeSekunden = useMemo(() => {
+    const basis = Math.max(0, selected?.heuteAbgeschlossenMinuten ?? 0) * 60
+    if (!laufend?.startZeit || !selected) return basis
+    const sameTopic =
+      selected.projektId === laufend.projektId &&
+      selected.kurztext === (laufend.notiz ?? '').trim()
+    return sameTopic ? basis + sessionSekunden : basis
+  }, [selected, laufend, sessionSekunden])
 
   function clearCollapseTimer(): void {
     if (collapseTimer.current != null) {
@@ -421,7 +436,7 @@ export default function FloatingBar() {
               title={t('float.timerTitle')}
               onDoubleClick={openMainApp}
             >
-              {formatSekunden(liveSekunden)}
+              {formatSekunden(anzeigeSekunden)}
             </div>
 
             <div className="float-totals float-totals-inline" title={selected?.label ?? ''}>
@@ -500,7 +515,7 @@ export default function FloatingBar() {
               title={t('float.timerTitle')}
               onDoubleClick={openMainApp}
             >
-              {formatSekunden(liveSekunden)}
+              {formatSekunden(anzeigeSekunden)}
             </div>
 
             <span

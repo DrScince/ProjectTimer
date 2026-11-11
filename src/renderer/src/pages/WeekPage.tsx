@@ -24,6 +24,7 @@ import {
   formatDatumDe,
   formatZeitHm,
   heuteIso,
+  istBuchungSapRelevant,
   istBuchungTeilweiseVerbucht,
   istBuchungVollVerbucht,
   monthEndIso,
@@ -122,7 +123,8 @@ function pauseMinutenVerfuegbar(presence: Anwesenheit | null): number {
 }
 
 function daySapStatus(buchungen: ZeitbuchungMitProjekt[]): SapTagesStatus['status'] {
-  const completed = buchungen.filter(istAbgeschlossen)
+  // Gelöschte und 0-Minuten-Buchungen zählen nicht für SAP
+  const completed = buchungen.filter(istBuchungSapRelevant)
   if (completed.length === 0) return 'leer'
   const voll = completed.filter((b) => istBuchungVollVerbucht(b)).length
   const teilweise = completed.filter((b) => istBuchungTeilweiseVerbucht(b)).length
@@ -132,7 +134,7 @@ function daySapStatus(buchungen: ZeitbuchungMitProjekt[]): SapTagesStatus['statu
 }
 
 function sapStatusForGroup(buchungen: ZeitbuchungMitProjekt[]): SapTransferStatus | 'leer' {
-  const completed = buchungen.filter(istAbgeschlossen)
+  const completed = buchungen.filter(istBuchungSapRelevant)
   if (completed.length === 0) return 'leer'
   const voll = completed.filter((b) => istBuchungVollVerbucht(b)).length
   const teilweise = completed.filter((b) => istBuchungTeilweiseVerbucht(b)).length

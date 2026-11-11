@@ -384,7 +384,7 @@ export const de = {
   'float.openApp': 'Doppelklick öffnet die Anwendung',
   'float.drag': 'Zum Verschieben ziehen',
   'float.slideoutPeek': 'Maus hierher – Leiste ausklappen',
-  'float.timerTitle': 'Laufzeit aktueller Auftrag · Doppelklick öffnet App',
+  'float.timerTitle': 'Heutige Zeit fortlaufend · Doppelklick öffnet App',
   'float.selectOrder': 'Auftrag / Topic wählen',
   'float.totalTime': 'Gesamt',
   'float.todayTime': 'Heute',

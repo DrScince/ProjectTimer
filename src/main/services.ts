@@ -3,6 +3,7 @@ import {
   formatDateDe,
   getEinstellungen,
   istBuchungAbgeschlossen,
+  istBuchungSapRelevant,
   istBuchungTeilweiseVerbucht,
   istBuchungVollVerbucht,
   listBuchungenByRange,
@@ -119,19 +120,20 @@ export function getWochenUebersicht(wochenStart?: string): WochenUebersicht {
 function sapStatusForIds(
   buchungen: ZeitbuchungMitProjekt[]
 ): { sapStatus: SapTransferStatus; sapUeberfuehrtAm: string | null } {
-  if (buchungen.length === 0) {
+  const relevant = buchungen.filter(istBuchungSapRelevant)
+  if (relevant.length === 0) {
     return { sapStatus: 'offen', sapUeberfuehrtAm: null }
   }
-  const voll = buchungen.filter((b) => istBuchungVollVerbucht(b))
-  const teilweise = buchungen.filter((b) => istBuchungTeilweiseVerbucht(b))
+  const voll = relevant.filter((b) => istBuchungVollVerbucht(b))
+  const teilweise = relevant.filter((b) => istBuchungTeilweiseVerbucht(b))
   if (voll.length === 0 && teilweise.length === 0) {
     return { sapStatus: 'offen', sapUeberfuehrtAm: null }
   }
-  const times = buchungen
+  const times = relevant
     .map((b) => b.sapUeberfuehrtAm)
     .filter((x): x is string => Boolean(x))
   const unique = Array.from(new Set(times))
-  if (voll.length === buchungen.length) {
+  if (voll.length === relevant.length) {
     return {
       sapStatus: 'ueberfuehrt',
       sapUeberfuehrtAm: unique.length === 1 ? unique[0] : null
